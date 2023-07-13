@@ -8,14 +8,18 @@
   [routes]
   (let [entry-points @[]]
     (each route routes
-      (let [e (dofile (route :script))
-            entry-point ((e 'fcgi-entry-point) :value)]
-        (log/write
-         (string/format "loading route '%s' using script: '%s'"
-                        (route :url)
-                        (route :script)) 0)
-        (array/push entry-points
-                    {:url (route :url) :function entry-point})))
+      (try
+        (let [e (dofile (route :script))
+              entry-point ((e 'fcgi-entry-point) :value)]
+          (log/write
+           (string/format "loaded route '%s' using script: '%s'"
+                          (route :url) (route :script)) 0)
+          (array/push entry-points
+                      {:url (route :url) :function entry-point}))
+        ([err f]
+         (log/write
+          (string/format "error loading route '%s' using script: '%s': %s"
+                         (route :url) (route :script) err) 0))))
     entry-points))
 
 (defn handle-values
