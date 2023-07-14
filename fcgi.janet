@@ -266,4 +266,5 @@
   (let [resp-hdr (mk-header :type :fcgi-end-request)
         content {:app-status 0 :protocol-status :fcgi-request-complete}]
     (close-request (header :request-id))
-    (write-msg conn header content)))
+    (write-msg conn header content)
+    [header ""]))
