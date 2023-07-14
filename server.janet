@@ -20,8 +20,8 @@
                       {:url (route :url) :function entry-point}))
         ([err f]
          (log/write
-          (string/format "Error loading route '%s' using script: '%s': %s"
-                         (route :url) (route :script) err) 0))))
+          (string/format "Error loading route '%s': %s"
+                         (route :url) err) 0))))
     entry-points))
 
 (defn handle-values
@@ -30,7 +30,7 @@
         resp-header (fcgi/mk-header :type :fcgi-get-values-result)]
     (put req-vars "FCGI_MAX_CONNS" "1")
     (fcgi/write-msg conn resp-header req-vars)
-    (log/write "Processed get-values request")
+    (log/write (string/format "Processed request: %p" (header :type)))
     (log/write (string/format "%p" req-vars) 1)))
 
 (defn handle-request
