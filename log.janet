@@ -23,8 +23,7 @@
   [log-file level]
   (set lfh (file/open log-file :a+))
   (set log-level level)
-  (if lfh
-    (write "FCGI logging started" 0)
+  (when (not lfh)
     (file/write stderr (string/format "fcgi: cannot open log-file: %s\n"
                                       log-file)))
   lfh)

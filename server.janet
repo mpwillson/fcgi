@@ -4,21 +4,23 @@
 (import /log)
 (import /config)
 
+(def HTML "Content-type: text/html\n\n<p>FCGI Server error: %s</p>")
+
 (defn load-routes
   [routes]
   (let [entry-points @[]]
     (each route routes
       (try
         (let [e (dofile (route :script))
-              entry-point ((e 'fcgi-entry-point) :value)]
+              entry-point ((e 'fcgi-main) :value)]
           (log/write
-           (string/format "loaded route '%s' using script: '%s'"
+           (string/format "Loaded route '%s' using script: '%s'"
                           (route :url) (route :script)) 0)
           (array/push entry-points
                       {:url (route :url) :function entry-point}))
         ([err f]
          (log/write
-          (string/format "error loading route '%s' using script: '%s': %s"
+          (string/format "Error loading route '%s' using script: '%s': %s"
                          (route :url) (route :script) err) 0))))
     entry-points))
 
@@ -27,8 +29,9 @@
   (let [req-vars content
         resp-header (fcgi/mk-header :type :fcgi-get-values-result)]
     (put req-vars "FCGI_MAX_CONNS" "1")
-    (log/write (string/format "pp table without newlines!") 1)
-    (fcgi/write-msg conn resp-header req-vars)))
+    (fcgi/write-msg conn resp-header req-vars)
+    (log/write "Processed get-values request")
+    (log/write (string/format "%p" req-vars) 1)))
 
 (defn handle-request
   [conn header request entry-points]
@@ -40,12 +43,28 @@
           match (find-index |(= ($ :url) target) entry-points)]
       (if match
         (try
-          (let [fun ((get entry-points match) :function)
+          (let [fun ((entry-points match) :function)
                 result (fun (request :params) (request :stdin))]
-            (fcgi/write-msg conn header result))
+            (if result
+              (do
+                (fcgi/write-msg conn header result)
+                (log/write (string/format "Request OK: %s" target)))
+              (let [fmt (string/format "Route returned nil: %s" target)]
+                (fcgi/write-msg conn header
+                                (string/format HTML fmt))
+                (log/write fmt))))
+
           ([err f]
+           (log/write (string/format "Error on route: %s: %s"
+                                     ((entry-points match) :url) err))
+           (fcgi/write-msg conn header (string/format HTML err))
            (set app-status 500)))
-        (set app-status 404))
+        (do
+          (log/write (string/format "Unknown route requested: %s" target))
+          (fcgi/write-msg conn header
+                          (string/format
+                           HTML (string/format "unknown route: %s" target)))
+          (set app-status 404)))
       (put header :type :fcgi-end-request)
       (fcgi/write-msg conn header
                       @{:app-status app-status
@@ -66,7 +85,7 @@
               (:close conn)
               (set conn (net/accept fcgi-server)))
             (do
-              (log/write (string/format "received: %p" (header :type)) 0)
+              (log/write (string/format "received: %p" (header :type)) 1)
               (case (header :type)
                 :fcgi-get-values
                  (handle-values conn header content)
@@ -82,8 +101,10 @@
 (defn main
   [& args]
   (log/init config/log-file config/log-level)
+  (log/write "FCGI Server started")
+  (log/write (string/format "Using socket file: %s" config/socket-file))
   (when (os/stat config/socket-file)
     (os/rm config/socket-file))
   (handle-messages config/socket-file)
-  (log/write "terminated by client" 0)
+  (log/write "Terminated by client" 0)
   (os/rm config/socket-file))

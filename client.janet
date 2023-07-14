@@ -34,22 +34,36 @@
   [& args]
   (let [fcgi-header (fcgi/mk-header :type :fcgi-get-values)
         content fcgi-vars]
-    (with [conn (net/connect :unix "/tmp/sock")]
+    (with [conn (net/connect :unix "/tmp/fcgi.sock")]
           (def fib (ev/go fcgi-receiver conn))
            (printf "Connected to %q!" conn)
            (put fcgi-header :type :fcgi-get-values)
            (fcgi/write-msg conn fcgi-header content)
-           #(ev/sleep 5)
+           # Good request
            (put fcgi-header :type :fcgi-begin-request)
            (put fcgi-header :request-id 1)
            (fcgi/write-msg conn fcgi-header request)
            (put fcgi-header :type :fcgi-params)
            (fcgi/write-msg conn fcgi-header fcgi-vars)
-           (fcgi/write-msg conn fcgi-header {"TEST_THING" "list"})
+           (fcgi/write-msg conn fcgi-header {"REQUEST_URI" "/fcgi/test"})
            (fcgi/write-msg conn fcgi-header "")
            (put fcgi-header :type :fcgi-stdin)
            (fcgi/write-msg conn fcgi-header "")
-                    (if (> (length args) 1)
+
+           # Bad request
+           (put fcgi-header :type :fcgi-begin-request)
+           (put fcgi-header :request-id 1)
+           (fcgi/write-msg conn fcgi-header request)
+           (put fcgi-header :type :fcgi-params)
+           (fcgi/write-msg conn fcgi-header
+                           {"REQUEST_URI" "/fcgi/list"
+                            "DOCUMENT_ROOT" "/share/mark/www-src/hydrus/data/"
+                            "QUERY_STRING" "dir=/articles/"})
+           (fcgi/write-msg conn fcgi-header "")
+           (put fcgi-header :type :fcgi-stdin)
+           (fcgi/write-msg conn fcgi-header "")
+
+           (if (> (length args) 1)
              (do
                (put fcgi-header :type :fcgi-null-request-id)
                (fcgi/write-msg conn fcgi-header "")))
