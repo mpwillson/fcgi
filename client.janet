@@ -63,6 +63,13 @@
            (put fcgi-header :type :fcgi-stdin)
            (fcgi/write-msg conn fcgi-header "")
 
+           # abort request
+           (put fcgi-header :type :fcgi-begin-request)
+           (put fcgi-header :request-id 2)
+           (fcgi/write-msg conn fcgi-header request)
+           (put fcgi-header :type :fcgi-abort-request)
+           (fcgi/write-msg conn fcgi-header "")
+
            (if (> (length args) 1)
              (do
                (put fcgi-header :type :fcgi-null-request-id)
