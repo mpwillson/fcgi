@@ -7,7 +7,7 @@
   []
   (let [date (os/date nil :local)]
     (string/format "[%d-%02d-%02d %02d:%02d]" (date :year) (date :month)
-             (date :month-day) (date :hours) (date :minutes))))
+             (+ 1 (date :month-day)) (date :hours) (date :minutes))))
 
 (defn write
   [msg &opt level]
@@ -15,7 +15,7 @@
   (when (<= level log-level)
     (if lfh
       (do
-        (file/write lfh (string/format "%s: %s\n" (timestamp) msg))
+        (file/write lfh (string/format "%s %s\n" (timestamp) msg))
         (file/flush lfh))
       (file/write stderr (string/format "%s %s\n" (timestamp) msg)))))
 
