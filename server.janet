@@ -24,6 +24,15 @@
                          (route :url) err) 0))))
     entry-points))
 
+(defn handle-abort-request
+  [conn header]
+  (let [resp-hdr (fcgi/mk-header :type :fcgi-end-request :request-id
+                    (header :request-id))
+        content {:app-status 0 :protocol-status :fcgi-request-complete}]
+    (fcgi/close-request (header :request-id))
+    (fcgi/write-msg conn resp-hdr content)
+    (log/write (string/format "Processed request: %p" (header :type)))))
+
 (defn handle-values
   [conn header content]
   (let [req-vars content
@@ -93,6 +102,8 @@
                  (handle-request conn header content entry-points)
                  :fcgi-stdin
                  (handle-request conn header content entry-points)
+                 :fcgi-abort-request
+                 (handle-abort-request conn header)
                  :fcgi-null-request-id
                  (return :quit)))))))
     (:close conn)

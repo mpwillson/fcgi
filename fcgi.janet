@@ -199,9 +199,6 @@
     (put end-req 4 (index status (end-request :protocol-status)))
     end-req))
 
-# forward decl
-(def handle-end-request nil)
-
 (defn read-msg
   [conn]
   "Read header and content from conn. Returns decoded."
@@ -226,8 +223,6 @@
            (add-request-stdin header content)
            :fcgi-end-request
            [header (decode-end-request content)]
-           :fcgi-end-request
-           (handle-end-request conn header)
            [header content]))
       [:closed nil])
     ([err f]
@@ -260,11 +255,3 @@
      (when (not (= content-len 0)) (:write conn payload))
      (when (not (= pad-len 8))
        (:write conn padding))))
-
-(defn handle-end-request
-  [conn header]
-  (let [resp-hdr (mk-header :type :fcgi-end-request)
-        content {:app-status 0 :protocol-status :fcgi-request-complete}]
-    (close-request (header :request-id))
-    (write-msg conn header content)
-    [header ""]))
