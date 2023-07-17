@@ -3,6 +3,7 @@
 (import /fcgi)
 (import /log)
 (import /config)
+(import osx)
 
 (def HTML "Content-type: text/html\n\n<p>FCGI Server error: %s</p>")
 
@@ -111,11 +112,18 @@
 
 (defn main
   [& args]
+  (when config/chroot
+    (os/cd config/chroot)
+    (osx/chroot config/chroot))
+
   (log/init config/log-file config/log-level)
   (log/write "FCGI Server started")
   (log/write (string/format "Using socket file: %s" config/socket-file))
   (when (os/stat config/socket-file)
-    (os/rm config/socket-file))
+      (os/rm config/socket-file))
+  (when config/user
+      (osx/setuid config/user))
+
   (handle-messages config/socket-file)
   (log/write "Terminated by client" 0)
   (os/rm config/socket-file))
