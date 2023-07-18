@@ -23,7 +23,7 @@
 (def route-param "REQUEST_URI")
 
 # Define routes
-# fcgi scripts must provide an function 'fcgi-main' which accepts
+# fcgi scripts must provide a function 'fcgi-main' which accepts
 # two arguments: params (table of params from the web server) and stdin
 (def routes [{:url "/fcgi/test" :script "test.fcgi"}
              {:url "/fcgi/fail" :script "no-such-file"}])
