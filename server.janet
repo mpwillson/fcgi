@@ -1,9 +1,17 @@
 # FCGI Server
 
-(import /fcgi)
-(import /log)
-(import /config)
-(import osx)
+(import ./fcgi)
+(import ./log)
+(import ./config)
+
+# Provide stub routines if osx module is not available; avoid compile error
+(try
+  (import osx)
+  ([err]
+   (defglobal 'osx/chroot (fn[& _]))
+   (defglobal 'osx/chown (fn[& _]))
+   (defglobal 'osx/setuid (fn[& _]))
+   (defglobal 'osx/setgid (fn[& _]))))
 
 (def HTML "Content-type: text/html\n\n<p>FCGI Server error: %s</p>")
 
@@ -82,10 +90,10 @@
       (fcgi/close-request (header :request-id)))))
 
 (defn handle-messages
-  [socket-file]
+  [fcgi-server]
   (var conn nil)
-  (let [fcgi-server (net/listen :unix socket-file)
-        entry-points (load-routes config/routes)]
+  (log/write (string/format "Using socket file: %s" config/socket-file))
+  (let [entry-points (load-routes config/routes)]
     (set conn (net/accept fcgi-server))
     (prompt :quit
        (forever
@@ -118,12 +126,16 @@
 
   (log/init config/log-file config/log-level)
   (log/write "FCGI Server started")
-  (log/write (string/format "Using socket file: %s" config/socket-file))
+  (when config/chroot (log/write
+                       (string/format "Chroot to: %s\n" config/chroot)))
   (when (os/stat config/socket-file)
-      (os/rm config/socket-file))
-  (when config/user
-      (osx/setuid config/user))
+    (os/rm config/socket-file))
 
-  (handle-messages config/socket-file)
+  (let [fcgi-server (net/listen :unix config/socket-file)]
+    (when config/user
+      (osx/chown config/socket-file config/user)
+      (osx/setuid config/user))
+    (handle-messages fcgi-server))
+
   (log/write "Terminated by client" 0)
   (os/rm config/socket-file))
