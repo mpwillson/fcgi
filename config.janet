@@ -1,18 +1,20 @@
 # Configuration file for fcgi.janet
 
-# OS dependent configuration
+# Pathname of socket file
 (def socket-file
   (case (os/which)
     :openbsd
-     "/var/run/fcgi.sock"
+     "/run/fcgi.sock"
      "/tmp/fcgi.sock"))
 
+# Use chroot?
 (def chroot
   (case (os/which)
     :openbsd
      "/var/www"
      nil))
 
+# Drop privileges?
 (def user
   (case (os/which)
     :openbsd
