@@ -1,5 +1,7 @@
 # FCGI - Utility routines
 
+(import ./log)
+
 (def header-proto @{:version 1 :type :fcgi-null-request-id
                     :request-id 0 :content-length 0
                     :padding-length 0})
@@ -251,7 +253,19 @@
      (if (= pad-len 8)
        (put header :padding-length 0)
        (put header :padding-length pad-len))
+     (log/write
+      (string/format "write-msg: Sending header: %p" header) 3)
      (:write conn (encode-header header))
-     (when (not (= content-len 0)) (:write conn payload))
+     (log/write "write-msg: header sent" 3)
+     (when (not (= content-len 0))
+       (log/write
+        (string/format "write-msg: Sending content of length: %d" content-len)
+        3)
+       (:write conn payload)
+       (log/write "write-msg: content sent" 3))
+
      (when (not (= pad-len 8))
-       (:write conn padding))))
+       (log/write
+        (string/format "write-msg: Sending padding of length: %d" pad-len) 3)
+       (:write conn padding)
+       (log/write "write-msg: padding sent" 3))))

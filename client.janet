@@ -45,7 +45,7 @@
            (fcgi/write-msg conn fcgi-header request)
            (put fcgi-header :type :fcgi-params)
            (fcgi/write-msg conn fcgi-header fcgi-vars)
-           (fcgi/write-msg conn fcgi-header {"REQUEST_URI" "/fcgi/test"})
+           (fcgi/write-msg conn fcgi-header {"DOCUMENT_URI" "/fcgi/test"})
            (fcgi/write-msg conn fcgi-header "")
            (put fcgi-header :type :fcgi-stdin)
            (fcgi/write-msg conn fcgi-header "")
@@ -56,9 +56,9 @@
            (fcgi/write-msg conn fcgi-header request)
            (put fcgi-header :type :fcgi-params)
            (fcgi/write-msg conn fcgi-header
-                           {"REQUEST_URI" "/fcgi/list"
+                           {"DOCUMENT_URI" "/fcgi/list"
                             "DOCUMENT_ROOT" "/share/mark/www-src/hydrus/data/"
-                            "QUERY_STRING" "dir=/articles/"})
+                            "QUERY_STRING" "target=/journal/"})
            (fcgi/write-msg conn fcgi-header "")
            (put fcgi-header :type :fcgi-stdin)
            (fcgi/write-msg conn fcgi-header "")

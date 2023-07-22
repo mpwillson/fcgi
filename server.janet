@@ -2,7 +2,6 @@
 
 (import ./fcgi)
 (import ./log)
-(import ./config)
 
 # Provide stub routines if osx module is not available; avoid compile error
 (try
@@ -11,7 +10,16 @@
    (defglobal 'osx/chroot (fn[& _]))
    (defglobal 'osx/chown (fn[& _]))
    (defglobal 'osx/setuid (fn[& _]))
-   (defglobal 'osx/setgid (fn[& _]))))
+   (defglobal 'osx/setgid (fn[& _]))
+   (defglobal 'osx/hostname (fn[& _] "unknown"))))
+
+# import os-dependent config if it exists. Fallback to config.janet
+(def config-file (string "./config-" (osx/hostname)))
+
+(try
+  (import* config-file :as "config")
+  ([err]
+   (import ./config)))
 
 (def HTML "Content-type: text/html\n\n<p>FCGI Server error: %s</p>")
 
@@ -58,7 +66,10 @@
     (let [header (fcgi/mk-header :type :fcgi-stdout
                     :request-id (header :request-id))
           target ((request :params) config/route-param)
-          match (find-index |(= ($ :url) target) entry-points)]
+          match (if target
+                  (find-index |(= ($ :url) target) entry-points)
+                  (log/write (string/format "Error: no such route param: %s"
+                                            config/route-param)))]
       (if match
         (try
           (let [fun ((entry-points match) :function)
@@ -78,10 +89,11 @@
            (fcgi/write-msg conn header (string/format HTML err))
            (set app-status 500)))
         (do
-          (log/write (string/format "Unknown route requested: %s" target))
-          (fcgi/write-msg conn header
-                          (string/format
-                           HTML (string/format "unknown route: %s" target)))
+          (when target
+            (log/write (string/format "Unknown route requested: %s" target))
+            (fcgi/write-msg conn header
+                            (string/format
+                             HTML (string/format "unknown route: %s" target))))
           (set app-status 404)))
       (put header :type :fcgi-end-request)
       (fcgi/write-msg conn header
@@ -102,19 +114,25 @@
             (do
               (:close conn)
               (set conn (net/accept fcgi-server)))
-            (do
-              (log/write (string/format "received: %p" (header :type)) 1)
-              (case (header :type)
-                :fcgi-get-values
-                 (handle-values conn header content)
-                 :fcgi-params
-                 (handle-request conn header content entry-points)
-                 :fcgi-stdin
-                 (handle-request conn header content entry-points)
-                 :fcgi-abort-request
-                 (handle-abort-request conn header)
-                 :fcgi-null-request-id
-                 (return :quit)))))))
+            (try
+              (do
+                (log/write (string/format "received: %p" (header :type)) 1)
+                (case (header :type)
+                  :fcgi-get-values
+                   (handle-values conn header content)
+                   :fcgi-params
+                   (handle-request conn header content entry-points)
+                   :fcgi-stdin
+                   (handle-request conn header content entry-points)
+                   :fcgi-abort-request
+                   (handle-abort-request conn header)
+                   :fcgi-null-request-id
+                   (return :quit)))
+              ([err f]
+               (log/write (string/format "Received error: %p" err))
+               (when (= err "stream hup")
+                 (:close conn)
+                 (set conn (net/accept fcgi-server)))))))))
     (:close conn)
     (:close fcgi-server)))
 
@@ -126,8 +144,8 @@
 
   (log/init config/log-file config/log-level)
   (log/write "FCGI Server started")
-  (when config/chroot (log/write
-                       (string/format "Chroot to: %s\n" config/chroot)))
+  (when config/chroot
+    (log/write (string/format "Chroot to: %s" config/chroot)))
   (when (os/stat config/socket-file)
     (os/rm config/socket-file))
 

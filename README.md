@@ -12,8 +12,14 @@ Based on the specification found at
 
 ## Configuration
 
-The FCGI server is configured by the file config.janet, a Janet script. The
-server offers the following configuration capabilities. All must be defined.
+The FCGI server is configured through a Janet script. The server first
+looks for a file in the same directory as server.janet, called
+'config-`hostname`.janet. If the file is not found, config.janet is
+loaded. Failure to find a configuration file will cause the server to
+terminate.
+
+The FCGI server offers the following configuration capabilities. All
+configuration elements  must be defined.
 
 ### socket-file
 
@@ -97,7 +103,7 @@ The osx module implements a number of specialist Unix OS calls. See
 
 To use the module, it must be installed system wide. If the FCGI
 server cannot import the osx module, stub functions are defined
-instead to avoid compilation errors.
+to avoid compilation errors.
 
 ## FCGI Scripts
 
