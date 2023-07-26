@@ -24,10 +24,10 @@
                (printf "End Request: %p" content)
                (printf "Unhandled type: %p" (header :type)))
           (do
-            (pp header)
+            (printf "fcgi-receiver: got %p from fcgi/read-msg" header )
             (return :quit))))))
     ([err f]
-     (printf "fcgi-receiver: got %p")
+     (printf "fcgi-receiver: error: %p" err)
      nil)))
 
 (defn main
