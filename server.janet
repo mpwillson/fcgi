@@ -13,15 +13,22 @@
    (defglobal 'osx/setgid (fn[& _]))
    (defglobal 'osx/hostname (fn[& _] "unknown"))))
 
-# import os-dependent config if it exists. Fallback to config.janet
-(def config-file (string "./config-" (osx/hostname)))
+# import host-dependent config if it exists. Fallback to config.janet
+(def *config-file*
+  (let [cf (string "./config-" (osx/hostname))]
+    (try
+      (do
+        (import* cf :as "config")
+        cf)
+      ([err]
+       (when (not (string/has-prefix? "could not find module" err))
+         (file/write stderr
+                     (string/format "Error loading config file: %s\n" err))
+         (os/exit 1))
+       (import ./config)
+       "./config"))))
 
-(try
-  (import* config-file :as "config")
-  ([err]
-   (import ./config)))
-
-(def HTML "Content-type: text/html\n\n<p>FCGI Server error: %s</p>")
+(def *HTML* "Content-type: text/html\n\n<p>FCGI Server error: %s</p>")
 
 (defn load-routes
   [routes]
@@ -45,10 +52,18 @@
   [conn header]
   (let [resp-hdr (fcgi/mk-header :type :fcgi-end-request :request-id
                     (header :request-id))
+        req-id (header :request-id)
+        keep-conn ((fcgi/requests req-id) :fcgi-keep-conn)
         content {:app-status 0 :protocol-status :fcgi-request-complete}]
     (fcgi/close-request (header :request-id))
     (fcgi/write-msg conn resp-hdr content)
-    (log/write (string/format "Processed request: %p" (header :type)))))
+    (log/write (string/format "Processed request: %p" (header :type)))
+    (if keep-conn
+      conn
+      (do
+        (:close conn)
+        (log/write "Connection closed at webserver request" 2)
+        nil))))
 
 (defn handle-values
   [conn header content]
@@ -59,9 +74,8 @@
     (log/write (string/format "Processed request: %p" (header :type)))
     (log/write (string/format "%p" req-vars) 1)))
 
-(defn handle-request
+(defn invoke-request-handler
   [conn header request entry-points]
-  (when (and (request :params-complete) (request :stdin-complete))
     (var app-status 0)
     (let [header (fcgi/mk-header :type :fcgi-stdout
                     :request-id (header :request-id))
@@ -80,35 +94,42 @@
                 (log/write (string/format "Request OK: %s" target)))
               (let [fmt (string/format "Route returned nil: %s" target)]
                 (fcgi/write-msg conn header
-                                (string/format HTML fmt))
+                                (string/format *HTML* fmt))
                 (log/write fmt))))
-
           ([err f]
            (log/write (string/format "Error on route: %s: %s"
                                      ((entry-points match) :url) err))
-           (fcgi/write-msg conn header (string/format HTML err))
+           (fcgi/write-msg conn header (string/format *HTML* err))
            (set app-status 500)))
         (do
           (when target
             (log/write (string/format "Unknown route requested: %s" target))
             (fcgi/write-msg conn header
                             (string/format
-                             HTML (string/format "unknown route: %s" target))))
+                             *HTML*
+                             (string/format "unknown route: %s" target))))
           (set app-status 404)))
       (put header :type :fcgi-end-request)
       (fcgi/write-msg conn header
                       @{:app-status app-status
                         :protocol-status :fcgi-request-complete})
-      (fcgi/close-request (header :request-id)))))
+      (let [keep-conn ((fcgi/requests (header :request-id)) :fcgi-keep-conn)]
+        (fcgi/close-request (header :request-id))
+        (if keep-conn
+          conn
+          (do
+            (:close conn)
+            (log/write "Connection closed at webserver request" 2)
+            nil)))))
 
 (defn handle-messages
   [fcgi-server]
   (var conn nil)
   (log/write (string/format "Using socket file: %s" config/socket-file))
   (let [entry-points (load-routes config/routes)]
-    (set conn (net/accept fcgi-server))
     (prompt :quit
        (forever
+        (when (not conn) (set conn (net/accept fcgi-server)))
         (let [[header content] (fcgi/read-msg conn)]
           (if (or (= header :closed) (= header :reset))
             (do
@@ -116,23 +137,32 @@
               (set conn (net/accept fcgi-server)))
             (try
               (do
-                (log/write (string/format "received: %p" (header :type)) 1)
-                (case (header :type)
-                  :fcgi-get-values
-                   (handle-values conn header content)
-                   :fcgi-params
-                   (handle-request conn header content entry-points)
-                   :fcgi-stdin
-                   (handle-request conn header content entry-points)
-                   :fcgi-abort-request
-                   (handle-abort-request conn header)
-                   :fcgi-null-request-id
-                   (return :quit)))
+                (log/write (string/format "Received: %p" (header :type)) 1)
+                (cond
+                  (= (header :type) :fcgi-begin-request)
+                  (log/write (string/format "Begin request: %p\n%p"
+                                            header content) 3)
+
+                  (= (header :type) :fcgi-get-values)
+                  (handle-values conn header content)
+
+                  (or (= (header :type) :fcgi-params)
+                      (= (header :type) :fcgi-stdin))
+                  (when (and (content :params-complete)
+                             (content :stdin-complete))
+                    (set conn (invoke-request-handler conn header content
+                                                      entry-points)))
+
+                  (= (header :type) :fcgi-abort-request)
+                  (set conn (handle-abort-request conn header))
+
+                  (= (header :type) :fcgi-null-request-id)
+                  (return :quit)))
               ([err f]
-               (log/write (string/format "Received error: %p" err))
-               (when (= err "stream hup")
+               (log/write (string/format "Message handling error: %p" err))
+               (when (or (= err "Broken pipe") (= err "stream hup"))
                  (:close conn)
-                 (set conn (net/accept fcgi-server)))))))))
+                 (set conn nil))))))))
     (:close conn)
     (:close fcgi-server)))
 
@@ -144,6 +174,7 @@
 
   (log/init config/log-file config/log-level)
   (log/write "FCGI Server started")
+  (log/write (string/format "Using config file: %s.janet" *config-file*))
   (when config/chroot
     (log/write (string/format "Chroot to: %s" config/chroot)))
   (when (os/stat config/socket-file)
