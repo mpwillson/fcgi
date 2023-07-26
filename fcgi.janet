@@ -205,28 +205,30 @@
   [conn]
   "Read header and content from conn. Returns decoded."
   (try
-    (if-let [hbuf (:read conn 8)]
-      (let [header (decode-header hbuf)
-            content (if (= (header :content-length) 0)
-                      "" (:read conn (header :content-length)))
-            padding (if (= (header :padding-length) 0)
-                      ""
-                      (:read conn (header :padding-length)))]
-        (case (header :type)
-          :fcgi-get-values
-           [header (decode-params content)]
-           :fcgi-get-values-result
-           [header (decode-params content)]
-           :fcgi-begin-request
-           (begin-request header (decode-request content))
-           :fcgi-params
-           (add-request-params header (decode-params content))
-           :fcgi-stdin
-           (add-request-stdin header content)
-           :fcgi-end-request
-           [header (decode-end-request content)]
-           [header content]))
-      [:closed nil])
+    (do
+      (log/write "Starting read" 3)
+      (if-let [hbuf (:read conn 8)]
+        (let [header (decode-header hbuf)
+              content (if (= (header :content-length) 0)
+                        "" (:read conn (header :content-length)))
+              padding (if (= (header :padding-length) 0)
+                        "" (:read conn (header :padding-length)))]
+          (log/write "Processing read" 3)
+          (case (header :type)
+            :fcgi-get-values
+             [header (decode-params content)]
+             :fcgi-get-values-result
+             [header (decode-params content)]
+             :fcgi-begin-request
+             (begin-request header (decode-request content))
+             :fcgi-params
+             (add-request-params header (decode-params content))
+             :fcgi-stdin
+             (add-request-stdin header content)
+             :fcgi-end-request
+             [header (decode-end-request content)]
+             [header content]))
+        [:closed nil]))
     ([err f]
      [:reset nil])))
 
@@ -254,18 +256,15 @@
        (put header :padding-length 0)
        (put header :padding-length pad-len))
      (log/write
-      (string/format "write-msg: Sending header: %p" header) 3)
+      (string/format "write-msg: Sending header: %p ..." header) 3)
      (:write conn (encode-header header))
-     (log/write "write-msg: header sent" 3)
+     (log/write "write-msg: Header sent" 3)
      (when (not (= content-len 0))
-       (log/write
-        (string/format "write-msg: Sending content of length: %d" content-len)
-        3)
+       (log/write "write-msg: Sending content ..." 3)
        (:write conn payload)
-       (log/write "write-msg: content sent" 3))
+       (log/write "write-msg: Content sent" 3))
 
      (when (not (= pad-len 8))
-       (log/write
-        (string/format "write-msg: Sending padding of length: %d" pad-len) 3)
+       (log/write "write-msg: Sending padding ..." 3)
        (:write conn padding)
-       (log/write "write-msg: padding sent" 3))))
+       (log/write "write-msg: Padding sent" 3))))
