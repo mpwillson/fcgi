@@ -154,24 +154,29 @@
       (buffer/push data (encode-param key (dict key))))
     data)))
 
-# TBD 4 byte lengths
+(defn decode-len
+  [data i]
+  (if (< (data i) 127)
+    [(data i) (+ i 1)]
+    [(decode-int (buffer/slice data i (+ i 5))) (+ i 4)]))
+
+(defn decode-nv
+  [data i name-len val-len]
+  (let [name (string (buffer/slice data i (+ i name-len)))
+        val (string (buffer/slice data (+ i name-len) (+ i name-len val-len)))]
+    [name val]))
+
 (defn decode-params
-  [data]
-  (let [dict @{}
-        data-len (length data)]
-    (var i 0)
-    (while (< i data-len)
-      (let [name-len (get data i)
-            val-len (get data (+ i 1))]
-      (if (and (< name-len 127) (< val-len 127))
-        (do
-          (set i (+ i 2))
-          (def name (string (buffer/slice data i (+ i name-len))))
-          (set i (+ i name-len))
-          (def val (string (buffer/slice data i (+ i val-len))))
-          (set i (+ i val-len))
-          (put dict name val)))))
-    dict))
+  [data &opt i dict]
+  (default i 0)
+  (default dict @{})
+  (if (>= i (length data))
+    dict
+    (let [[name-len i*] (decode-len data i)
+          [val-len i**] (decode-len data i*)
+          [name val] (decode-nv data i** name-len val-len)]
+      (put dict name val)
+      (decode-params data (+ i** name-len val-len) dict))))
 
 (defn decode-request
   [content]
@@ -206,14 +211,14 @@
   "Read header and content from conn. Returns decoded."
   (try
     (do
-      (log/write "Starting read" 3)
+      (log/write "Starting read from connection" 5)
       (if-let [hbuf (:read conn 8)]
         (let [header (decode-header hbuf)
               content (if (= (header :content-length) 0)
                         "" (:read conn (header :content-length)))
               padding (if (= (header :padding-length) 0)
                         "" (:read conn (header :padding-length)))]
-          (log/write "Processing read" 3)
+          (log/write "Processing message read" 5)
           (case (header :type)
             :fcgi-get-values
              [header (decode-params content)]
@@ -256,15 +261,15 @@
        (put header :padding-length 0)
        (put header :padding-length pad-len))
      (log/write
-      (string/format "write-msg: Sending header: %p ..." header) 3)
+      (string/format "write-msg: Sending header: %p ..." header) 5)
      (:write conn (encode-header header))
-     (log/write "write-msg: Header sent" 3)
+     (log/write "write-msg: Header sent" 5)
      (when (not (= content-len 0))
-       (log/write "write-msg: Sending content ..." 3)
+       (log/write "write-msg: Sending content ..." 5)
        (:write conn payload)
-       (log/write "write-msg: Content sent" 3))
+       (log/write "write-msg: Content sent" 5))
 
      (when (not (= pad-len 8))
-       (log/write "write-msg: Sending padding ..." 3)
+       (log/write "write-msg: Sending padding ..." 5)
        (:write conn padding)
-       (log/write "write-msg: Padding sent" 3))))
+       (log/write "write-msg: Padding sent" 5))))
