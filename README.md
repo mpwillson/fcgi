@@ -61,12 +61,12 @@ FCGI server is invoked by root.
 
 routes is defined as an array of structs. Each struct
 defines a url and a Janet script to invoke when that url is
-encountered. See [FCGI Scripts](#FCGI Scripts), below.
+encountered. See [FCGI Scripts](#fcgi-scripts), below.
 
-`
+``` janet
 (def routes [{:url "/fcgi/test" :script "/test.fcgi"}
              {:url "/fcgi/list" :script "/fcgi/list.fcgi"}])
-`
+```
 
 ### route-param
 
@@ -107,7 +107,7 @@ To use the module, it must be installed system wide. If the FCGI
 server cannot import the osx module, stub functions are defined
 to avoid compilation errors.
 
-## FCGI Scripts
+## FCGI Scripts {#fcgi-scripts}
 
 When a url defined in routes is encountered, the script specified is
 invoked. A script must provide the function `fcgi-main`, which
@@ -125,7 +125,7 @@ the web server.
 Assuming an existing Janet script runs as a CGI program, the following
 code will allow the script to run as an FCGI script.
 
-`
+``` janet
  (defn fcgi-main
    "Enable CGI program to operate as an FCGI route. Set required environment
    variables from params and capture printed output using dynamic var."
@@ -135,4 +135,4 @@ code will allow the script to run as an FCGI script.
    (var output @"")
    (with-dyns [:out output] (main))
    output)
-`
+```
