@@ -61,7 +61,7 @@ FCGI server is invoked by root.
 
 routes is defined as an array of structs. Each struct
 defines a url and a Janet script to invoke when that url is
-encountered. See [FCGI Scripts](#fcgi-scripts), below.
+encountered. See [FCGI Scripts](#fcgi-scripts) below.
 
 ``` janet
 (def routes [{:url "/fcgi/test" :script "/test.fcgi"}
@@ -74,7 +74,7 @@ route-param defines which CGI environment parameter the
 FCGI server should consult to match route urls.
 
 `
-(def route-param "REQUEST_URI")
+(def route-param "DOCUMENT_URI")
 `
 
 ### log-file
