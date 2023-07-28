@@ -194,8 +194,7 @@
 
 (defn decode-end-request
   [content]
-  (let [dict @{}
-        app-status (decode-int (buffer/slice content 0 4))
+  (let [app-status (decode-int (buffer/slice content 0 4))
         protocol-status (status (get content 4))]
     @{:app-status app-status :protocol-status protocol-status}))
 
