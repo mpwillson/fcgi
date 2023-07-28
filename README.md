@@ -126,13 +126,13 @@ Assuming an existing Janet script runs as a CGI program, the following
 code will allow the script to run as an FCGI script.
 
 `
-(defn fcgi-main
-  "Enable CGI program to operate as an FCGI route. Set required environment
-  variables from params and capture printed output using dynamic var."
-  [params in]
-  (each name ["DOCUMENT_ROOT" "REMOTE_ADDR" "QUERY_STRING"]
-    (os/setenv name (params name)))
-  (var output @"")
-  (with-dyns [:out output] (main))
-  output)
+ (defn fcgi-main
+   "Enable CGI program to operate as an FCGI route. Set required environment
+   variables from params and capture printed output using dynamic var."
+   [params in]
+   (each name ["DOCUMENT_ROOT" "REMOTE_ADDR" "QUERY_STRING"]
+     (os/setenv name (params name)))
+   (var output @"")
+   (with-dyns [:out output] (main))
+   output)
 `
