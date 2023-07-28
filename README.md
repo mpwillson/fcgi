@@ -4,7 +4,7 @@
 
 This is an application server which implements the Fast CGI protocol to
 receive requests from a web server. The server is written in Janet and
-allows arbitraty Janet programs to be loaded to respond to FCGI
+allows arbitrary Janet programs to be loaded to respond to FCGI
 requests.
 
 Based on the specification found at
@@ -98,7 +98,7 @@ verbosity of the log file. NB Not really implemented yet.
 (def log-level 0)
 `
 
-## osx
+## osx {#osx}
 
 The osx module implements a number of specialist Unix OS calls. See
 <https://github/com/mpwillson/osx>.
