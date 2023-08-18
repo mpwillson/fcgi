@@ -101,7 +101,7 @@ verbosity of the log file. NB Not really implemented yet.
 ## osx
 
 The osx module implements a number of specialist Unix OS calls. See
-<https://github/com/mpwillson/osx>.
+<https://github.com/mpwillson/osx>.
 
 To use the module, it must be installed system wide. If the FCGI
 server cannot import the osx module, stub functions are defined
