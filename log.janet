@@ -6,7 +6,7 @@
 (defn timestamp
   []
   (let [date (os/date nil :local)]
-    (string/format "[%d-%02d-%02d %02d:%02d:%02d]" (date :year) (date :month)
+    (string/format "[%d-%02d-%02d %02d:%02d:%02d]" (date :year) (+ 1 (date :month))
                    (+ 1 (date :month-day)) (date :hours) (date :minutes)
                    (date :seconds))))
 
