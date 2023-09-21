@@ -32,4 +32,6 @@
 
 (defn close
   []
-  (file/close lfh))
+  (when lfh
+    (file/close lfh)
+    (set lfh nil)))

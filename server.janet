@@ -175,6 +175,7 @@
   (log/init config/log-file config/log-level)
   (log/write "FCGI Server started")
   (log/write (string/format "Using config file: %s.janet" *config-file*))
+  (log/write (string/format "Using log level: %d" config/log-level))
   (when config/chroot
     (log/write (string/format "Chroot to: %s" config/chroot)))
   (when (os/stat config/socket-file)
