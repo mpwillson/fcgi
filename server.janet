@@ -127,44 +127,44 @@
   (var conn nil)
   (log/write (string/format "Using socket file: %s" config/socket-file))
   (let [entry-points (load-routes config/routes)]
-    (prompt :quit
-       (forever
-        (when (not conn) (set conn (net/accept fcgi-server)))
-        (let [[header content] (fcgi/read-msg conn)]
-          (if (or (= header :closed) (= header :reset))
-            (do
-              (:close conn)
-              (set conn (net/accept fcgi-server)))
-            (try
-              (do
-                (log/write (string/format "Received: %p" (header :type)) 1)
-                (cond
-                  (= (header :type) :fcgi-begin-request)
-                  (log/write (string/format "Begin request: %p\n%p"
-                                            header content) 3)
+    (try
+      (forever
+       (when (not conn) (set conn (net/accept fcgi-server)))
+       (let [[header content] (fcgi/read-msg conn)]
+         (if (or (= header :closed) (= header :reset))
+           (do
+             (:close conn)
+             (set conn (net/accept fcgi-server)))
+           (do
+             (log/write (string/format "Received: %p" (header :type)) 1)
+             (cond
+               (= (header :type) :fcgi-begin-request)
+               (log/write (string/format "Begin request: %p\n%p"
+                                         header content) 3)
 
-                  (= (header :type) :fcgi-get-values)
-                  (handle-values conn header content)
+               (= (header :type) :fcgi-get-values)
+               (handle-values conn header content)
 
-                  (or (= (header :type) :fcgi-params)
-                      (= (header :type) :fcgi-stdin))
-                  (when (and (content :params-complete)
-                             (content :stdin-complete))
-                    (set conn (invoke-request-handler conn header content
-                                                      entry-points)))
+               (or (= (header :type) :fcgi-params)
+                   (= (header :type) :fcgi-stdin))
+               (when (and (content :params-complete)
+                          (content :stdin-complete))
+                 (set conn (invoke-request-handler conn header content
+                                                   entry-points)))
 
-                  (= (header :type) :fcgi-abort-request)
-                  (set conn (handle-abort-request conn header))
+               (= (header :type) :fcgi-abort-request)
+               (set conn (handle-abort-request conn header))
 
-                  (= (header :type) :fcgi-null-request-id)
-                  (return :quit)))
-              ([err f]
-               (log/write (string/format "Message handling error: %p" err))
-               (when (or (= err "Broken pipe") (= err "stream hup"))
+               (= (header :type) :fcgi-null-request-id)
+               (do
                  (:close conn)
-                 (set conn nil))))))))
-    (:close conn)
-    (:close fcgi-server)))
+                 (:close fcgi-server)
+                 (break)))))))
+      ([err f]
+       (log/write (string/format "Message handling error: %p" err))
+       (when (or (= err "Broken pipe") (= err "stream hup"))
+         (:close conn)
+         (set conn nil))))))
 
 (defn main
   [& args]

@@ -9,23 +9,22 @@
   "Read messages from fcgi server. Run as a fiber."
   [conn]
   (try
-    (prompt :quit
-       (forever
-        (let [[header content] (fcgi/read-msg conn)]
-          (if (table? header)
-            (case (header :type)
-              :fcgi-get-values-result
-               (let [resp-vars content]
-                 (pp header)
-                 (pp resp-vars))
-               :fcgi-stdout
-               (printf "Received: %s" content)
-               :fcgi-end-request
-               (printf "End Request: %p" content)
-               (printf "Unhandled type: %p" (header :type)))
-          (do
-            (printf "fcgi-receiver: got %p from fcgi/read-msg" header )
-            (return :quit))))))
+    (forever
+     (let [[header content] (fcgi/read-msg conn)]
+       (if (table? header)
+         (case (header :type)
+           :fcgi-get-values-result
+            (let [resp-vars content]
+              (pp header)
+              (pp resp-vars))
+            :fcgi-stdout
+            (printf "Received: %s" content)
+            :fcgi-end-request
+            (printf "End Request: %p" content)
+            (printf "Unhandled type: %p" (header :type)))
+         (do
+           (printf "fcgi-receiver: got %p from fcgi/read-msg" header)
+           (break)))))
     ([err f]
      (printf "fcgi-receiver: error: %p" err)
      nil)))
