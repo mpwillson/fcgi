@@ -13,8 +13,9 @@
    (defglobal 'osx/setgid (fn[& _]))
    (defglobal 'osx/hostname (fn[& _] "unknown"))))
 
-# import host-dependent config if it exists. Fallback to config.janet
-(def *config-file*
+
+(defn import-config[]
+  `Import host-dependent config if it exists. Fallback to config.janet.`
   (let [cf (string "./config-" (osx/hostname))]
     (try
       (do
@@ -27,6 +28,8 @@
          (os/exit 1))
        (import ./config)
        "./config"))))
+
+(def *config-file* (import-config))
 
 (def *HTML* "Content-type: text/html\n\n<p>FCGI Server error: %s</p>")
 
