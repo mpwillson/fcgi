@@ -165,13 +165,13 @@ script.
 Add a stanza of the following form to the relevant server section in
 the `/etc/httpd.conf` file:
 
-`
+``` conf
 location "/fcgi/*" {
     fastcgi {
         socket "/run/fcgi.sock"
     }
 }
-`
+```
 
 The socket file definition should match that provided to the
 fcgi-server via the configuration file.
