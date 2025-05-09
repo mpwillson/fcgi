@@ -171,13 +171,14 @@ location "/fcgi/*" {
         socket "/run/fcgi.sock"
     }
 }
+`
 
 The socket file definition should match that provided to the
 fcgi-server via the configuration file.
 
 ## Testing
 
-To (minmally) test the FCGI server prior to installation, issue the command:
+To (minimally) test the FCGI server prior to installation, issue the command:
 
 `
 jpm -l install && jpm -l test
