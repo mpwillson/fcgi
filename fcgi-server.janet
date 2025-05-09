@@ -1,7 +1,10 @@
+#!/usr/bin/env janet
+#
 # FCGI Server
 
-(import ./fcgi)
-(import ./log)
+(import fcgi-lib :as fcgi)
+(import log)
+(import util)
 
 # Provide stub routines if osx module is not available; avoid compile error
 (try
@@ -13,25 +16,68 @@
    (defglobal 'osx/setgid (fn[& _]))
    (defglobal 'osx/hostname (fn[& _] "unknown"))))
 
-
-(defn import-config[]
-  `Import host-dependent config if it exists. Fallback to config.janet.`
-  (let [cf (string "./config-" (osx/hostname))]
-    (try
-      (do
-        (import* cf :as "config")
-        cf)
-      ([err]
-       (when (not (string/has-prefix? "could not find module" err))
-         (file/write stderr
-                     (string/format "Error loading config file: %s\n" err))
-         (os/exit 1))
-       (import ./config)
-       "./config"))))
-
-(def *config-file* (import-config))
-
 (def *HTML* "Content-type: text/html\n\n<p>FCGI Server error: %s</p>")
+
+(defn file-lines
+  [filename]
+  (if-let [f (file/open filename :r)]
+    (file/lines f)
+    (error
+      (string/format "fcgi-config: unable to open file: %s" filename))))
+
+(defn read-config
+  `Merge server configuration from filename into config. Returns updated
+   config. Will throw error on configuration errors.`
+  [filename config]
+  (let [lines (file-lines filename)
+        simple-keywords "socket-file|chroot|user|route-param|log-file"
+        comment-or-empty (peg/compile '(+ (* :s* "#") (* :s* -1)))]
+    (each line lines
+      (when (not (peg/match comment-or-empty line))
+        (let [tokens (map string/trim
+                          (string/split ":" (string/trim line)))]
+          (cond
+            (empty? tokens)
+            (error (string/format "fcgi-config: malformed line: '%s'"
+                                  line))
+
+            (and (string/find (tokens 0) simple-keywords)
+                 (= (length tokens) 2) (not= (tokens 1) ""))
+            (put config (keyword (tokens 0))
+                 (if (= (tokens 1) "nil") nil (tokens 1)))
+
+            (and (= (tokens 0) "route") (= (length tokens) 3))
+            (array/push (config :routes)
+                        {:url (tokens 1) :script (tokens 2)})
+
+            (= (tokens 0) "log-level")
+            (if-let [ll (scan-number (tokens 1))]
+              (put config :log-level ll)
+              (error "fcgi-config: log-level must be numeric"))
+
+            (error (string/format
+                    "fcgi-config: malformed line: '%s'" line)))))))
+  (put config :origin filename))
+
+(defn find-config
+  `Returns server configuration from filename, if provided, otherwise
+   from preset locations. If no files found, returns default internal config.`
+  [&opt filename]
+  (let [config @{:origin "<InternalDefault>"
+                 :socket-file "/tmp/fcgi.sock"
+                 :chroot nil
+                 :user nil
+                 :route-param "DOCUMENT_URI"
+                 :routes @[]
+                 :log-file "/tmp/fcgi.log"
+                 :log-level 3}
+        files ["/etc/fcgi-server.cfg" "/usr/local/etc/fcgi-server.cfg"]]
+    (if filename
+      (read-config filename config)
+      (each file files
+        (when (os/stat file)
+          (read-config file config))))
+    config))
 
 (defn load-routes
   [routes]
@@ -78,15 +124,15 @@
     (log/write (string/format "%p" req-vars) 1)))
 
 (defn invoke-request-handler
-  [conn header request entry-points]
+  [conn header request entry-points route-param]
     (var app-status 0)
     (let [header (fcgi/mk-header :type :fcgi-stdout
                     :request-id (header :request-id))
-          target ((request :params) config/route-param)
+          target ((request :params) route-param)
           match (if target
                   (find-index |(= ($ :url) target) entry-points)
                   (log/write (string/format "Error: no such route param: %s"
-                                            config/route-param)))]
+                                            route-param)))]
       (if match
         (try
           (let [fun ((entry-points match) :function)
@@ -126,10 +172,10 @@
             nil)))))
 
 (defn handle-messages
-  [fcgi-server]
+  [fcgi-server socket-file routes route-param]
   (var conn nil)
-  (log/write (string/format "Using socket file: %s" config/socket-file))
-  (let [entry-points (load-routes config/routes)]
+  (log/write (string/format "Using socket file: %s" socket-file))
+  (let [entry-points (load-routes routes)]
     (try
       (forever
        (when (not conn) (set conn (net/accept fcgi-server)))
@@ -153,42 +199,45 @@
                (when (and (content :params-complete)
                           (content :stdin-complete))
                  (set conn (invoke-request-handler conn header content
-                                                   entry-points)))
+                                                   entry-points route-param)))
 
                (= (header :type) :fcgi-abort-request)
                (set conn (handle-abort-request conn header))
 
                (= (header :type) :fcgi-null-request-id)
                (do
+                 (log/write "Terminated by client" 0)
                  (:close conn)
                  (:close fcgi-server)
                  (break)))))))
       ([err f]
-       (log/write (string/format "Message handling error: %p" err))
+       (log/write (string/format "Server exit: message handling error: %p" err))
        (when (or (= err "Broken pipe") (= err "stream hup"))
          (:close conn)
          (set conn nil))))))
 
 (defn main
-  [& args]
-  (when config/chroot
-    (os/cd config/chroot)
-    (osx/chroot config/chroot))
+  [name & args]
+  (let [opts (util/argparse args "c:" @{:c nil})
+        config (try (find-config (opts :c))
+                    ([err f] (eprintf err) (os/exit 1)))]
+    (when (config :chroot)
+      (os/cd (config :chroot))
+      (osx/chroot (config :chroot)))
+    (log/init (config :log-file) (config :log-level))
+    (log/write "FCGI Server started")
+    (log/write (string/format "Using config file: %s" (config :origin)))
+    (log/write (string/format "Using log level: %d" (config :log-level)))
+    (when (config :chroot)
+      (log/write (string/format "Chroot to: %s" (config :chroot))))
+    (when (os/stat (config :socket-file))
+      (os/rm (config :socket-file)))
 
-  (log/init config/log-file config/log-level)
-  (log/write "FCGI Server started")
-  (log/write (string/format "Using config file: %s.janet" *config-file*))
-  (log/write (string/format "Using log level: %d" config/log-level))
-  (when config/chroot
-    (log/write (string/format "Chroot to: %s" config/chroot)))
-  (when (os/stat config/socket-file)
-    (os/rm config/socket-file))
+    (let [fcgi-server (net/listen :unix (config :socket-file))]
+      (when (config :user)
+        (osx/chown (config :socket-file) (config :user))
+        (osx/setuid (config :user)))
+      (handle-messages fcgi-server (config :socket-file)
+                       (config :routes) (config :route-param)))
 
-  (let [fcgi-server (net/listen :unix config/socket-file)]
-    (when config/user
-      (osx/chown config/socket-file config/user)
-      (osx/setuid config/user))
-    (handle-messages fcgi-server))
-
-  (log/write "Terminated by client" 0)
-  (os/rm config/socket-file))
+    (os/rm (config :socket-file))))

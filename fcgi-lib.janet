@@ -1,6 +1,6 @@
 # FCGI - Utility routines
 
-(import ./log)
+(import log)
 
 (def header-proto @{:version 1 :type :fcgi-null-request-id
                     :request-id 0 :content-length 0
@@ -147,7 +147,7 @@
 
 (defn encode-params
   [dict]
-  (if (= (length dict) 0)
+  (if (empty? dict)
     ""
   (let [data (buffer/new 256)]
     (loop [key :keys dict]
