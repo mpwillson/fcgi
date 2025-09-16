@@ -206,12 +206,13 @@
     end-req))
 
 (defn read-msg
-  [conn]
-  "Read header and content from conn. Returns decoded."
+  [conn timeout]
+  "Read header and content from conn. Returns tupe of decoded
+   header and content, unless timeout|reset|closed on conn."
   (try
     (do
-      (log/write "Starting read from connection" 5)
-      (if-let [hbuf (:read conn 8)]
+      (log/write "Starting read from connection" 10)
+      (if-let [hbuf (ev/read conn 8 @"" timeout)]
         (let [header (decode-header hbuf)
               content (if (= (header :content-length) 0)
                         "" (:read conn (header :content-length)))
@@ -234,7 +235,10 @@
              [header content]))
         [:closed nil]))
     ([err f]
-     [:reset nil])))
+     (cond
+       (= err "timeout")
+       [:timeout nil]
+       [:reset nil]))))
 
 (defn write-msg
   "Encodes header and content; writes to conn."

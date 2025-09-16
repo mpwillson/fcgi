@@ -55,6 +55,12 @@
               (put config :log-level ll)
               (error "fcgi-config: log-level must be numeric"))
 
+            (= (tokens 0) "max-threads")
+            (if-let [mt (scan-number (tokens 1))]
+              (put config :max-threads mt)
+              (error "fcgi-config: max-threads must be numeric"))
+
+            :else
             (error (string/format
                     "fcgi-config: malformed line: '%s'" line)))))))
   (put config :origin filename))
@@ -70,7 +76,8 @@
                  :route-param "DOCUMENT_URI"
                  :routes @[]
                  :log-file "/tmp/fcgi.log"
-                 :log-level 3}
+                 :log-level 3
+                 :max-threads 10}
         files ["/etc/fcgi-server.cfg" "/usr/local/etc/fcgi-server.cfg"]]
     (if filename
       (read-config filename config)
@@ -115,91 +122,146 @@
         nil))))
 
 (defn handle-values
-  [conn header content]
+  [conn header content max-threads]
   (let [req-vars content
         resp-header (fcgi/mk-header :type :fcgi-get-values-result)]
     (put req-vars "FCGI_MAX_CONNS" "1")
+    (put req-vars "FCGI_MAX_REQS" (string max-threads))
+    (put req-vars "FCGI_MPXS_CONNS" "1")
     (fcgi/write-msg conn resp-header req-vars)
     (log/write (string/format "Processed request: %p" (header :type)))
     (log/write (string/format "%p" req-vars) 1)))
 
+(defn run-thread
+  [fun header request target chan peg-grammar]
+  (setdyn :peg-grammar peg-grammar)
+  (try
+    (let [result (fun (request :params) (request :stdin))]
+      (ev/give chan [:ok (header :request-id) header result target]))
+    ([err f]
+     (ev/give chan [:err (header :request-id) header err target]))))
+
+(defn request-postlude
+  [header conn app-status protocol-status]
+  (put header :type :fcgi-end-request)
+  (fcgi/write-msg conn header
+                  @{:app-status app-status
+                    :protocol-status protocol-status})
+  (let [keep-conn ((fcgi/requests (header :request-id)) :fcgi-keep-conn)]
+    (fcgi/close-request (header :request-id))
+    (if keep-conn
+      conn
+      (do
+        (:close conn)
+        (log/write "Connection closed at webserver request" 2)
+        nil))))
+
 (defn invoke-request-handler
-  [conn header request entry-points route-param]
-    (var app-status 0)
-    (let [header (fcgi/mk-header :type :fcgi-stdout
-                    :request-id (header :request-id))
-          target ((request :params) route-param)
-          match (if target
-                  (find-index |(= ($ :url) target) entry-points)
-                  (log/write (string/format "Error: no such route param: %s"
-                                            route-param)))]
-      (if match
-        (try
-          (let [fun ((entry-points match) :function)
-                result (fun (request :params) (request :stdin))]
-            (if result
-              (do
-                (fcgi/write-msg conn header result)
-                (log/write (string/format "Request OK: %s" target)))
-              (let [fmt (string/format "Route returned nil: %s" target)]
-                (fcgi/write-msg conn header
-                                (string/format *HTML* fmt))
-                (log/write fmt))))
-          ([err f]
-           (log/write (string/format "Error on route: %s: %s"
-                                     ((entry-points match) :url) err))
-           (fcgi/write-msg conn header (string/format *HTML* err))
-           (set app-status 500)))
-        (do
-          (when target
-            (log/write (string/format "Unknown route requested: %s" target))
-            (fcgi/write-msg conn header
-                            (string/format
-                             *HTML*
-                             (string/format "unknown route: %s" target))))
-          (set app-status 404)))
-      (put header :type :fcgi-end-request)
-      (fcgi/write-msg conn header
-                      @{:app-status app-status
-                        :protocol-status :fcgi-request-complete})
-      (let [keep-conn ((fcgi/requests (header :request-id)) :fcgi-keep-conn)]
-        (fcgi/close-request (header :request-id))
-        (if keep-conn
-          conn
+  [conn header request entry-points route-param chan]
+  (var app-status 0)
+  (let [header (fcgi/mk-header :type :fcgi-stdout
+                  :request-id (header :request-id))
+        target ((request :params) route-param)
+        match (if target
+                (find-index |(= ($ :url) target) entry-points)
+                (log/write (string/format "Error: no such route param: %s"
+                                          route-param)))]
+    (if match
+      (let [fun ((entry-points match) :function)
+            # The dynamic env var :peg-grammar (along with the others)
+            # is not passed to a new thread, so do it manually
+            peg-grammar (dyn :peg-grammar)]
+        (log/write (string/format "Spawning for: %s [%d]" target
+                                  (header :request-id)) 0)
+        (ev/spawn-thread (run-thread fun header request target chan
+                                     peg-grammar))
+        conn)
+      (do
+        (when target
+          (log/write (string/format "Unknown route requested: %s" target))
+          (fcgi/write-msg conn header
+                          (string/format
+                           *HTML*
+                           (string/format "unknown route: %s" target))))
+        (set app-status 404)
+        (request-postlude header conn app-status :fcgi-request-complete)))))
+
+(defn check-threads
+  [threads chan conn]
+  (var app-status 0)
+  (when (> (ev/count chan) 0)
+    (let [[tag id header result target] (ev/take chan)]
+      (cond
+        (= tag :ok)
+        (if result
           (do
-            (:close conn)
-            (log/write "Connection closed at webserver request" 2)
-            nil)))))
+            (fcgi/write-msg conn header result)
+            (log/write (string/format "Request OK: %s" target)))
+          (let [fmt (string/format "Route returned nil: %s" target)]
+            (fcgi/write-msg conn header
+                            (string/format *HTML* fmt))
+            (log/write fmt)))
+
+        (= tag :err)
+        (do
+          (log/write (string/format "Error on route: %s: %s" target result))
+          (fcgi/write-msg conn header (string/format *HTML* result))
+          (set app-status 500))
+
+        :else
+         (log/write (string/format "Thread channel contains bad msg: %p"
+                                   tag) 0))
+      (when-let [i (find-index |(= $ id) threads)]
+        (array/remove threads i))
+      (request-postlude header conn app-status :fcgi-request-complete)))
+  conn)
 
 (defn handle-messages
-  [fcgi-server socket-file routes route-param]
+  [fcgi-server socket-file routes route-param max-threads]
   (var conn nil)
-  (log/write (string/format "Using socket file: %s" socket-file))
+  (def threads (array/new max-threads))
+  (def chan (ev/thread-chan 128))
+
+  (log/write (string/format "Socket file: %s" socket-file))
   (let [entry-points (load-routes routes)]
     (try
       (forever
        (when (not conn) (set conn (net/accept fcgi-server)))
-       (let [[header content] (fcgi/read-msg conn)]
-         (if (or (= header :closed) (= header :reset))
+       (let [[header content] (fcgi/read-msg conn 0.1)]
+         (cond
+           (= header :timeout)
+           (set conn (check-threads threads chan conn))
+
+           (or (= header :closed) (= header :reset))
            (do
              (:close conn)
              (set conn (net/accept fcgi-server)))
+
+           :else
            (do
              (log/write (string/format "Received: %p" (header :type)) 1)
              (cond
                (= (header :type) :fcgi-begin-request)
-               (log/write (string/format "Begin request: %p\n%p"
-                                         header content) 3)
+               (if (< (length threads) max-threads)
+                 (log/write (string/format "Begin request: %p\n%p"
+                                           header content) 3)
+                 (do
+                   (put header :type :fcgi-end-request)
+                   (request-postlude header conn 0 :fcgi-overloaded)
+                   (log/write
+                    (string/format "Max threads exceeded; request rejected"))))
 
                (= (header :type) :fcgi-get-values)
-               (handle-values conn header content)
+               (handle-values conn header content max-threads)
 
                (or (= (header :type) :fcgi-params)
                    (= (header :type) :fcgi-stdin))
                (when (and (content :params-complete)
                           (content :stdin-complete))
-                 (set conn (invoke-request-handler conn header content
-                                                   entry-points route-param)))
+                 (array/push threads (header :request-id))
+                 (set conn
+                      (invoke-request-handler conn header content
+                                              entry-points route-param chan)))
 
                (= (header :type) :fcgi-abort-request)
                (set conn (handle-abort-request conn header))
@@ -212,6 +274,7 @@
                  (break)))))))
       ([err f]
        (log/write (string/format "Server exit: message handling error: %p" err))
+       (error err)
        (when (or (= err "Broken pipe") (= err "stream hup"))
          (:close conn)
          (set conn nil))))))
@@ -226,8 +289,10 @@
       (osx/chroot (config :chroot)))
     (log/init (config :log-file) (config :log-level))
     (log/write "FCGI Server started")
-    (log/write (string/format "Using config file: %s" (config :origin)))
-    (log/write (string/format "Using log level: %d" (config :log-level)))
+    (log/write (string/format "Configuration file: %s" (config :origin)))
+    (log/write (string/format "Log level: %d" (config :log-level)))
+    (log/write (string/format "Maximum concurrent requests: %d"
+                              (config :max-threads)))
     (when (config :chroot)
       (log/write (string/format "Chroot to: %s" (config :chroot))))
     (when (os/stat (config :socket-file))
@@ -238,6 +303,7 @@
         (osx/chown (config :socket-file) (config :user))
         (osx/setuid (config :user)))
       (handle-messages fcgi-server (config :socket-file)
-                       (config :routes) (config :route-param)))
+                       (config :routes) (config :route-param)
+                       (config :max-threads)))
 
     (os/rm (config :socket-file))))

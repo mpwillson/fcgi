@@ -55,7 +55,7 @@ osx/chroot; see [osx](#osx) below, for more details.
 chroot: nil
 `
 
-Use of chroot means the FCGI server must be invoked by root.
+Use of chroot requires that the FCGI server be invoked by root.
 
 ### user
 
@@ -95,8 +95,9 @@ route-param: DOCUMENT_URI
 
 ### log-file
 
-log-file defines the pathname of the log file. The file must be writable by the
-effective user id of the Janet process running the FCGI server.
+log-file defines the pathname of the log file. The file must be
+writable by the effective user id of the Janet process running the
+FCGI server.
 
 `
 log-file: /tmp/fcgi.log
@@ -113,6 +114,14 @@ verbosity of the log file.
 `
 log-level: 3
 `
+### max-threads
+
+Defines the maximum number of spawned threads to handle parallel
+requests from the web server. This value is passed to the web server
+as FCGI_MAX_REQS should it issue a FCGI_GET_VALUES request.
+
+`max-threads: 10
+`
 
 ## osx
 
@@ -123,7 +132,7 @@ To use the module, it must be installed system wide. Clone or download
 the repository. Navigate to the osx directory and install with:
 
 `
-sudo jpm install
+doas jpm install
 `
 
 If the FCGI server cannot import the osx module, stub functions are
@@ -146,7 +155,7 @@ the web server.
 
 Assuming an existing Janet script runs as a CGI program (via a main
 function), the following code will allow the script to run as an FCGI
-script.
+route program.
 
 ``` janet
  (defn fcgi-main
@@ -188,7 +197,7 @@ jpm -l install && jpm -l test
 
 To install system-wide:
 
-`sudo make install
+`doas make install
 `
 
 This will run `jpm install` and copy the default configuration file to
@@ -196,5 +205,5 @@ This will run `jpm install` and copy the default configuration file to
 
 ## Caveats
 
-The FCGI server is single-threaded.  Not recommended for high traffic
-environments (or, indeed, low traffic environments).
+Not recommended for high traffic environments (or, indeed, low traffic
+environments).
