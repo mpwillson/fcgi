@@ -1,0 +1,13 @@
+#!/bin/ksh
+#
+# fcgi-server.janet rc.d script
+
+daemon="/usr/local/bin/fcgi-server.janet"
+rc_bg="YES"
+
+. /etc/rc.d/rc.subr
+
+# include janet invocation in process string
+pexp="janet ${daemon} ${fcgi_server_flags}"
+
+rc_cmd $1

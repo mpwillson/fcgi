@@ -18,6 +18,8 @@ The FCGI server script is started by a command line of the form:
 janet fcgi-server.janet [-c configuration-file] &
 `
 
+An rc.d script is provided for OpenBSD. See below.
+
 ## Configuration
 
 The FCGI server parameters are set via a configuration file. The
@@ -202,6 +204,37 @@ To install system-wide:
 
 This will run `jpm install` and copy the default configuration file to
 `/usr/local/etc/`.
+
+## Daemon control
+
+The FCGI server will respond to the following signals:
+
+SIGTERM - terminate server gracefully
+SIGHUP  - reload the route scripts
+
+An rc.d script to control the FCGI server is provided for use on OpenBSD.
+
+Add the following line to `/etc/rc.conf.local`:
+
+`
+fcgi_server_flags=""
+`
+
+In addition, the daemon name must be added to the `pkg_scripts`
+variable in `/etc/rc.conf.local`, e.g.:
+
+`
+pkg_scripts=samba dovecot fcgi_server
+`
+
+The FCGI server can then be controlled by `rcctl`, for example:
+
+`
+doas rcctl restart fcgi_server
+`
+
+The `rcctl` reload verb is supported, which will cause the FCGI server
+to re-load the route scripts.
 
 ## Caveats
 
