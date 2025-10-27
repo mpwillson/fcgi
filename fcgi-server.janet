@@ -279,6 +279,21 @@
          (:close conn)
          (set conn nil))))))
 
+(defn handle-term-signal
+  [stream]
+  (log/write "Terminated by TERM signal")
+  (when stream (net/close stream))
+  (os/exit 0))
+
+(defn handle-hup-signal
+  "Reinvoke handle-messages to reload routes on HUP signal"
+  [fcgi-server config peg-grammar]
+  (setdyn :peg-grammar peg-grammar)
+  (log/write "Configuration reload on HUP signal")
+  (handle-messages fcgi-server (config :socket-file)
+                   (config :routes) (config :route-param)
+                   (config :max-threads)))
+
 (defn main
   [name & args]
   (let [opts (util/argparse args "c:" @{:c nil})
@@ -298,12 +313,17 @@
     (when (os/stat (config :socket-file))
       (os/rm (config :socket-file)))
 
-    (let [fcgi-server (net/listen :unix (config :socket-file))]
+    (let [fcgi-server (net/listen :unix (config :socket-file))
+          # capture peg-grammar here, otherwise cannot pass into
+          # handle-hup-signal
+          peg-grammar (dyn :peg-grammar)]
       (when (config :user)
         (osx/chown (config :socket-file) (config :user))
-        (osx/setuid (config :user)))
+        (osx/setuid (config :user))
+        (log/write (string/format "Effective user: %s" (config :user))))
+      (os/sigaction :term |(handle-term-signal fcgi-server) true)
+      (os/sigaction :hup |(handle-hup-signal fcgi-server config peg-grammar)
+                    true)
       (handle-messages fcgi-server (config :socket-file)
                        (config :routes) (config :route-param)
-                       (config :max-threads)))
-
-    (os/rm (config :socket-file))))
+                       (config :max-threads)))))
