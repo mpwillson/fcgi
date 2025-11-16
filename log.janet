@@ -18,8 +18,7 @@
       (do
         (file/write lfh (string/format "%s %s\n" (timestamp) msg))
         (file/flush lfh))
-      (file/write stderr (string/format "%s %s\n" (timestamp) msg))))
-  nil)
+      (file/write stderr (string/format "%s %s\n" (timestamp) msg)))))
 
 (defn init
   [log-file level]
