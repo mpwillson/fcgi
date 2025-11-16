@@ -206,19 +206,20 @@
     end-req))
 
 (defn read-msg
-  [conn timeout]
-  "Read header and content from conn. Returns tupe of decoded
+  [conn]
+  "Read header and content from conn. Returns tuple of decoded
    header and content, unless timeout|reset|closed on conn."
   (try
     (do
       (log/write "Starting read from connection" 10)
-      (if-let [hbuf (ev/read conn 8 @"" timeout)]
+      (if-let [hbuf (ev/read conn 8)]
         (let [header (decode-header hbuf)
               content (if (= (header :content-length) 0)
                         "" (:read conn (header :content-length)))
               padding (if (= (header :padding-length) 0)
                         "" (:read conn (header :padding-length)))]
-          (log/write "Processing message read" 5)
+          (log/write (string/format "Processing message read: %p"
+                                    (header :type)) 5)
           (case (header :type)
             :fcgi-get-values
              [header (decode-params content)]
