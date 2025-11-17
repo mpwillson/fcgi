@@ -18,6 +18,8 @@
 
 (def *HTML* "Content-type: text/html\n\n<p>FCGI Server error: %s</p>")
 
+(var *entry-points* "Holds route entry points for route-mgr" nil)
+
 (defn file-lines
   [filename]
   (if-let [f (file/open filename :r)]
@@ -106,20 +108,12 @@
 
 (defn handle-abort-request
   [conn header]
-  (let [resp-hdr (fcgi/mk-header :type :fcgi-end-request :request-id
-                    (header :request-id))
-        req-id (header :request-id)
-        keep-conn ((fcgi/requests req-id) :fcgi-keep-conn)
+  (let [req-id (header :request-id)
+        resp-hdr (fcgi/mk-header :type :fcgi-end-request :request-id req-id)
         content {:app-status 0 :protocol-status :fcgi-request-complete}]
-    (fcgi/close-request (header :request-id))
+    (fcgi/close-request req-id)
     (fcgi/write-msg conn resp-hdr content)
-    (log/write (string/format "Processed request: %p" (header :type)))
-    (if keep-conn
-      conn
-      (do
-        (:close conn)
-        (log/write "Connection closed at webserver request" 2)
-        nil))))
+    (log/write (string/format "Processed request: %p" (header :type)) 5)))
 
 (defn handle-values
   [conn header content max-threads]
@@ -142,22 +136,15 @@
      (ev/give chan [:err (header :request-id) header err target]))))
 
 (defn request-postlude
-  [header conn app-status protocol-status]
+  [conn header app-status protocol-status]
   (put header :type :fcgi-end-request)
   (fcgi/write-msg conn header
                   @{:app-status app-status
-                    :protocol-status protocol-status})
-  (let [keep-conn ((fcgi/requests (header :request-id)) :fcgi-keep-conn)]
-    (fcgi/close-request (header :request-id))
-    (if keep-conn
-      conn
-      (do
-        (:close conn)
-        (log/write "Connection closed at webserver request" 2)
-        nil))))
+                    :protocol-status protocol-status}))
 
 (defn invoke-request-handler
-  [conn header request entry-points route-param chan]
+  "Invoke route script in a new fiber."
+  [conn header request entry-points route-param chan peg-grammar]
   (var app-status 0)
   (let [header (fcgi/mk-header :type :fcgi-stdout
                   :request-id (header :request-id))
@@ -167,14 +154,11 @@
                 (log/write (string/format "Error: no such route param: %s"
                                           route-param)))]
     (if match
-      (let [fun ((entry-points match) :function)
-            # The dynamic env var :peg-grammar (along with the others)
-            # is not passed to a new thread, so do it manually
-            peg-grammar (dyn :peg-grammar)]
-        (log/write (string/format "Spawning for: %s [%d]" target
+      (let [fun ((entry-points match) :function)]
+        (log/write (string/format "Starting request for: %s [%d]" target
                                   (header :request-id)) 0)
-        (ev/spawn-thread (run-thread fun header request target chan
-                                     peg-grammar))
+        (ev/call run-thread fun header request target chan
+                                     peg-grammar)
         conn)
       (do
         (when target
@@ -184,13 +168,14 @@
                            *HTML*
                            (string/format "unknown route: %s" target))))
         (set app-status 404)
-        (request-postlude header conn app-status :fcgi-request-complete)))))
+        (request-postlude conn header app-status :fcgi-request-complete)))))
 
-(defn check-threads
-  [threads chan conn]
+(defn route-result
+  [conn msg]
+  "Process result from route script."
   (var app-status 0)
-  (when (> (ev/count chan) 0)
-    (let [[tag id header result target] (ev/take chan)]
+  (try
+    (let [[tag id header result target] msg]
       (cond
         (= tag :ok)
         (if result
@@ -211,88 +196,127 @@
         :else
          (log/write (string/format "Thread channel contains bad msg: %p"
                                    tag) 0))
-      (when-let [i (find-index |(= $ id) threads)]
-        (array/remove threads i))
-      (request-postlude header conn app-status :fcgi-request-complete)))
-  conn)
+      (request-postlude conn header app-status :fcgi-request-complete))
+    ([err f]
+     (if (= err "Broken pipe")
+       (log/write "Webserver unexpectedly closed connection")
+       (log/write "Route result failed: %s" err)))))
 
-(defn handle-messages
-  [fcgi-server socket-file routes route-param max-threads]
-  (var conn nil)
-  (def threads (array/new max-threads))
-  (def chan (ev/thread-chan 128))
+(defn route-mgr
+  "Initiate route scripts at listener request via chan. Results are returned
+   directly to the webserver via conn."
+  [conn chan entry-points route-param max-threads peg-grammar]
+  (var nthreads 0)
+  (var quit false)
 
-  (log/write (string/format "Socket file: %s" socket-file))
-  (let [entry-points (load-routes routes)]
-    (try
-      (forever
-       (when (not conn) (set conn (net/accept fcgi-server)))
-       (let [[header content] (fcgi/read-msg conn 0.1)]
-         (cond
-           (= header :timeout)
-           (set conn (check-threads threads chan conn))
+  (prompt :quit
+     (forever
+      (when-let [msg (ev/take chan)]
+        (cond
+          (= (msg 0) :task)
+          (let [[type header content] msg]
+            (if (= nthreads max-threads)
+              (do
+                (put header :type :fcgi-end-request)
+                (request-postlude conn header 0 :fcgi-overloaded)
+                (log/write
+                 (string/format "Max threads exceeded; request rejected")))
+              (do
+                (set nthreads (inc nthreads))
+                (invoke-request-handler conn header content entry-points
+                                        route-param chan peg-grammar))))
+          (or (= (msg 0) :ok) (= (msg 0) :err))
+          (do
+            (set nthreads (dec nthreads))
+            (route-result conn msg)
+            (when (and quit (= nthreads 0))
+              (log/write "Connection closed at webserver request" 2)
+              (:close conn)
+              (return :quit)))
 
-           (or (= header :closed) (= header :reset))
-           (do
-             (:close conn)
-             (set conn (net/accept fcgi-server)))
+          (= (msg 0) :quit)
+          (do
+            (if (> nthreads 0)
+              (set quit true) # delay exit until threads complete
+              (return :quit)))))))
+  (log/write "Route-Mgr terminated" 10))
 
-           :else
-           (do
-             (log/write (string/format "Received: %p" (header :type)) 1)
-             (cond
-               (= (header :type) :fcgi-begin-request)
-               (if (< (length threads) max-threads)
+(defn listener
+  "Read messages from webserver and react as required."
+  [conn chan max-threads]
+  (prompt :quit
+     (try
+       (forever
+        (let [[header content] (fcgi/read-msg conn)]
+          (cond
+            (or (= header :closed) (= header :reset))
+            (when conn
+              (log/write "Connection closed or reset" 2)
+              (:close conn)
+              (ev/give chan [:quit]))
+            :else
+             (do
+               (log/write (string/format "Received: %p" (header :type)) 5)
+               (cond
+                 (= (header :type) :fcgi-begin-request)
                  (log/write (string/format "Begin request: %p\n%p"
                                            header content) 3)
+
+                 (= (header :type) :fcgi-get-values)
+                 (handle-values conn header content max-threads)
+
+                 (or (= (header :type) :fcgi-params)
+                     (= (header :type) :fcgi-stdin))
+                 (when (and (content :params-complete)
+                            (content :stdin-complete))
+                   (ev/give chan [:task header content])
+                   (when (not (content :fcgi-keep-conn))
+                     (ev/give chan [:quit])
+                     (return :quit)))
+
+                 (= (header :type) :fcgi-abort-request)
+                 (let [keep-conn
+                       ((fcgi/requests (header :request-id)) :fcgi-keep-conn)]
+                   (handle-abort-request conn header)
+                   (when (not keep-conn)
+                     (ev/give chan [:quit])
+                     (return :quit)))
+
+                 (= (header :type) :fcgi-null-request-id)
                  (do
-                   (put header :type :fcgi-end-request)
-                   (request-postlude header conn 0 :fcgi-overloaded)
-                   (log/write
-                    (string/format "Max threads exceeded; request rejected"))))
+                   (log/write "Terminated by client" 0)
+                   (ev/give chan [:quit])
+                   (ev/sleep 1)
+                   (os/exit 0)))))))
+     ([err f]
+      (when (not= err "stream is closed")
+        (log/write (string/format "Listener exit: %p" err))
+        (ev/give chan [:quit])
+        (when (or (= err "Broken pipe") (= err "stream hup"))
+          (when conn
+            (:close conn)))))))
+  (log/write "Listener terminated" 10))
 
-               (= (header :type) :fcgi-get-values)
-               (handle-values conn header content max-threads)
-
-               (or (= (header :type) :fcgi-params)
-                   (= (header :type) :fcgi-stdin))
-               (when (and (content :params-complete)
-                          (content :stdin-complete))
-                 (array/push threads (header :request-id))
-                 (set conn
-                      (invoke-request-handler conn header content
-                                              entry-points route-param chan)))
-
-               (= (header :type) :fcgi-abort-request)
-               (set conn (handle-abort-request conn header))
-
-               (= (header :type) :fcgi-null-request-id)
-               (do
-                 (log/write "Terminated by client" 0)
-                 (:close conn)
-                 (:close fcgi-server)
-                 (break)))))))
-      ([err f]
-       (log/write (string/format "Server exit: message handling error: %p" err))
-       (error err)
-       (when (or (= err "Broken pipe") (= err "stream hup"))
-         (:close conn)
-         (set conn nil))))))
+(defn handler
+  "Handle comms with the webserver. Runs route-mgr in a new fiber to
+   initiate route scripts and return results. Calls listerner to receive
+   webserver messages and action them."
+  [conn config entry-points peg-grammar]
+  (log/write (string/format "Handler running with conn: %p" conn) 10)
+  (let [chan (ev/thread-chan 10)]
+    (ev/call route-mgr conn chan entry-points (config :route-param)
+                 (config :max-threads) peg-grammar)
+    (listener conn chan (config :max-threads)))
+  (log/write "Handler exit" 10))
 
 (defn handle-term-signal
-  [stream]
-  (log/write "Terminated by TERM signal")
-  (when stream (net/close stream))
+  [chan]
   (os/exit 0))
 
 (defn handle-hup-signal
-  "Reinvoke handle-messages to reload routes on HUP signal"
-  [fcgi-server config peg-grammar]
-  (setdyn :peg-grammar peg-grammar)
-  (log/write "Configuration reload on HUP signal")
-  (handle-messages fcgi-server (config :socket-file)
-                   (config :routes) (config :route-param)
-                   (config :max-threads)))
+  [chan routes]
+  (log/write "Reloading routes on HUP")
+  (set *entry-points* (load-routes routes)))
 
 (defn main
   [name & args]
@@ -314,16 +338,20 @@
       (os/rm (config :socket-file)))
 
     (let [fcgi-server (net/listen :unix (config :socket-file))
-          # capture peg-grammar here, otherwise cannot pass into
-          # handle-hup-signal
-          peg-grammar (dyn :peg-grammar)]
+          super-chan (ev/thread-chan (config :max-threads))]
       (when (config :user)
         (osx/chown (config :socket-file) (config :user))
         (osx/setuid (config :user))
         (log/write (string/format "Effective user: %s" (config :user))))
-      (os/sigaction :term |(handle-term-signal fcgi-server) true)
-      (os/sigaction :hup |(handle-hup-signal fcgi-server config peg-grammar)
-                    true)
-      (handle-messages fcgi-server (config :socket-file)
-                       (config :routes) (config :route-param)
-                       (config :max-threads)))))
+      (os/sigaction :term |(handle-term-signal super-chan) true)
+      (os/sigaction :hup
+         |(handle-hup-signal super-chan (config :routes))
+         true)
+      (set *entry-points* (load-routes (config :routes)))
+      (forever
+       (log/write "Awaiting connection ..." 5)
+       (let [conn (net/accept fcgi-server)]
+         (log/write (string/format "Client connected on stream: %p" conn) 5)
+         # dynamic vars such as *peg-grammar* are not passed to other fibers,
+         # so pass explicitly
+         (ev/call handler conn config *entry-points* (dyn :peg-grammar)))))))
