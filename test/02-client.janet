@@ -3,7 +3,7 @@
 (import fcgi-lib :as fcgi)
 
 (def fcgi-vars {"FCGI_MAX_CONNS" "1" "FCGI_MAX_REQS" "2" "FCGI_MPXS_CONNS" "1"})
-(def request {:role :fcgi-responder :fcgi-keep-conn true})
+(def request @{:role :fcgi-responder :fcgi-keep-conn true})
 (def get-vals-result [@{:content-length 51  :padding-length 5  :request-id 0
                         :type :fcgi-get-values-result :version 1}
                       @{"FCGI_MAX_CONNS" "1" "FCGI_MAX_REQS" "2"
@@ -18,7 +18,7 @@
   "Read message from fcgi server."
   [conn]
   (try
-     (let [[header content] (fcgi/read-msg conn 10)]
+    (let [[header content] (fcgi/read-msg conn)]
        (if (table? header)
          (case (header :type)
            :fcgi-get-values-result
@@ -51,59 +51,82 @@
   (when (os/stat "fcgi.log")
     (os/rm "fcgi.log"))
   # start server and give time for socket to be created
+  (prin ">> Starting fcgi-server ... ")
   (os/shell "jpm -l janet fcgi-server.janet -c test/test.cfg &")
   (os/sleep 1)
+  (print "done")
 
   (let [fcgi-header (fcgi/mk-header :type :fcgi-get-values)]
-    (with
-     [conn (net/connect :unix "/tmp/fcgi.sock")]
-     (put fcgi-header :type :fcgi-get-values)
-     (fcgi/write-msg conn fcgi-header fcgi-vars)
-     (let [result (fcgi-receive conn)]
-       (pp result)
-       (assert (deep= result get-vals-result)))
+    (var conn (net/connect :unix "/tmp/fcgi.sock"))
+    (put fcgi-header :type :fcgi-get-values)
+    (fcgi/write-msg conn fcgi-header fcgi-vars)
+    (let [result (fcgi-receive conn)]
+      (pp result)
+      (assert (deep= result get-vals-result)))
 
-     # Good requests
-     (url-request conn 1 "/fcgi/test")
-     (url-request conn 2 "/fcgi/test")
-     # overload
-     (put fcgi-header :type :fcgi-begin-request)
-     (put fcgi-header :request-id 3)
-     (fcgi/write-msg conn fcgi-header request)
-     (let [msg (fcgi-receive conn)]
-       (pp msg)
-       (assert (deep= msg overload)))
-     (let [page (fcgi-receive conn)]
-       (pp page)
-       (assert (deep= page good-page)))
-     (assert (deep= (fcgi-receive conn) end-request))
-     (let [page (fcgi-receive conn)]
-       (pp page)
-       (assert (deep= page good-page)))
-     (let [msg (fcgi-receive conn)]
-       (pp msg)
-       (assert (deep= msg end-request)))
+    (printf ">> Requests with fcgi-keep-conn true")
+    (url-request conn 1 "/fcgi/test")
+    (url-request conn 2 "/fcgi/test")
+    # overload
+    (url-request conn 3 "/fcgi/test")
 
-     # Bad request
-     (url-request conn 1 "/fcgi/list")
-     (let [page (fcgi-receive conn)]
-       (pp page)
-       (assert (deep= page bad-route)))
-     (let [msg (fcgi-receive conn)]
-       (pp msg)
-       (assert (deep= msg bad-end-request)))
+    (let [msg (fcgi-receive conn)]
+      (pp msg)
+      (assert (deep= msg overload)))
+    (let [page (fcgi-receive conn)]
+      (pp page)
+      (assert (deep= page good-page)))
+    (assert (deep= (fcgi-receive conn) end-request))
+    (let [page (fcgi-receive conn)]
+      (pp page)
+      (assert (deep= page good-page)))
+    (let [msg (fcgi-receive conn)]
+      (pp msg)
+      (assert (deep= msg end-request)))
 
-     # abort request
-     (put fcgi-header :type :fcgi-begin-request)
-     (put fcgi-header :request-id 2)
-     (fcgi/write-msg conn fcgi-header request)
-     (put fcgi-header :type :fcgi-abort-request)
-     (fcgi/write-msg conn fcgi-header "")
-     (let [msg (fcgi-receive conn)]
-       (pp msg)
-       (assert (deep= msg end-request)))
+    # Bad request
+    (printf ">> Bad request")
+    (url-request conn 1 "/fcgi/list")
+    (let [page (fcgi-receive conn)]
+      (pp page)
+      (assert (deep= page bad-route)))
+    (let [msg (fcgi-receive conn)]
+      (pp msg)
+      (assert (deep= msg bad-end-request)))
 
-     # terminate server
-     (put fcgi-header :type :fcgi-null-request-id)
-     (fcgi/write-msg conn fcgi-header "")
-     (os/sleep 1))))
+    # abort request
+    (printf ">> Abort request")
+    (put fcgi-header :type :fcgi-begin-request)
+    (put fcgi-header :request-id 2)
+    (fcgi/write-msg conn fcgi-header request)
+    (put fcgi-header :type :fcgi-abort-request)
+    (fcgi/write-msg conn fcgi-header "")
+    (let [msg (fcgi-receive conn)]
+      (pp msg)
+      (assert (deep= msg end-request)))
+
+    (printf ">> Good requests with keep-conn false")
+    (put request :fcgi-keep-conn false)
+    (url-request conn 1 "/fcgi/test")
+    (let [page (fcgi-receive conn)]
+      (pp page)
+      (assert (deep= page good-page)))
+    (let [page (fcgi-receive conn)]
+      (pp page)
+      (assert (deep= page end-request)))
+    # With fcgi=keep-conn false, must close and re-open client connection
+    (:close conn)
+    (set conn (net/connect :unix "/tmp/fcgi.sock"))
+    (url-request conn 1 "/fcgi/test")
+    (let [page (fcgi-receive conn)]
+      (pp page)
+      (assert (deep= page good-page)))
+    (let [page (fcgi-receive conn)]
+      (pp page)
+      (assert (deep= page end-request)))
+    (:close conn)
+
+    # terminate server
+    (printf ">> Terminating fcgi-server")
+    (os/shell "pkill -n janet")
+    (os/sleep 1)))
