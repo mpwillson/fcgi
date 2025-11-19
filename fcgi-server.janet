@@ -249,46 +249,43 @@
   (try
     (forever
      (let [[header content] (fcgi/read-msg conn)]
+       (log/write (string/format "Received: %p" (header :type)) 5)
        (cond
          (or (= header :closed) (= header :reset))
          (when conn
            (log/write "Connection closed or reset" 2)
            (:close conn)
            (ev/give chan [:quit]))
-         :else
-          (do
-            (log/write (string/format "Received: %p" (header :type)) 5)
-            (cond
-              (= (header :type) :fcgi-begin-request)
-              (log/write (string/format "Begin request: %p\n%p"
-                                        header content) 3)
 
-              (= (header :type) :fcgi-get-values)
-              (handle-values conn header content max-threads)
+         (= (header :type) :fcgi-begin-request)
+         (log/write (string/format "Begin request: %p\n%p"
+                                   header content) 3)
 
-              (or (= (header :type) :fcgi-params)
-                  (= (header :type) :fcgi-stdin))
-              (when (and (content :params-complete)
-                         (content :stdin-complete))
-                (ev/give chan [:task header content])
-                (when (not (content :fcgi-keep-conn))
-                  (ev/give chan [:quit])
-                  (break)))
+         (= (header :type) :fcgi-get-values)
+         (handle-values conn header content max-threads)
 
-              (= (header :type) :fcgi-abort-request)
-              (let [keep-conn
-                    ((fcgi/requests (header :request-id)) :fcgi-keep-conn)]
-                (handle-abort-request conn header)
-                (when (not keep-conn)
-                  (ev/give chan [:quit])
-                  (break)))
+         (or (= (header :type) :fcgi-params)
+             (= (header :type) :fcgi-stdin))
+         (when (and (content :params-complete)
+                    (content :stdin-complete))
+           (ev/give chan [:task header content])
+           (when (not (content :fcgi-keep-conn))
+             (ev/give chan [:quit])
+             (break)))
 
-              (= (header :type) :fcgi-null-request-id)
-              (do
-                (log/write "Terminated by client" 0)
-                (ev/give chan [:quit])
-                (ev/sleep 1)
-                (os/exit 0)))))))
+         (= (header :type) :fcgi-abort-request)
+         (let [keep-conn ((fcgi/requests (header :request-id)) :fcgi-keep-conn)]
+           (handle-abort-request conn header)
+           (when (not keep-conn)
+             (ev/give chan [:quit])
+             (break)))
+
+         (= (header :type) :fcgi-null-request-id)
+         (do
+           (log/write "Terminated by client" 0)
+           (ev/give chan [:quit])
+           (ev/sleep 1)
+                (os/exit 0)))))
     ([err f]
      (when (not= err "stream is closed")
        (log/write (string/format "Listener exit: %p" err))
