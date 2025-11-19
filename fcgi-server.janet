@@ -309,6 +309,7 @@
 
 (defn handle-term-signal
   [chan]
+  (log/write "Terminated by TERM signal")
   (os/exit 0))
 
 (defn handle-hup-signal
