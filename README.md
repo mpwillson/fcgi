@@ -166,7 +166,7 @@ route program.
    [params in]
    (each name ["DOCUMENT_ROOT" "REMOTE_ADDR" "QUERY_STRING"]
      (os/setenv name (params name)))
-   (var output @"")
+   (def output @"")
    (with-dyns [:out output] (main))
    output)
 ```
@@ -207,10 +207,10 @@ This will run `jpm install` and copy the default configuration file to
 
 ## Daemon control
 
-The FCGI server will respond to the following signals:
+The FCGI server responds to the following signals:
 
-SIGTERM - terminate server gracefully
-SIGHUP  - reload the route scripts
+* SIGTERM to terminate server
+* SIGHUP to reload the route scripts
 
 An rc.d script to control the FCGI server is provided for use on OpenBSD.
 
