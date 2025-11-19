@@ -143,7 +143,8 @@
                     :protocol-status protocol-status}))
 
 (defn invoke-request-handler
-  "Invoke route script in a new fiber."
+  "Invoke route script in a new fiber. Returns true if route found,
+   false otherwise."
   [conn header request entry-points route-param chan peg-grammar]
   (var app-status 0)
   (let [header (fcgi/mk-header :type :fcgi-stdout
@@ -168,7 +169,8 @@
                            *HTML*
                            (string/format "unknown route: %s" target))))
         (set app-status 404)
-        (request-postlude conn header app-status :fcgi-request-complete)))))
+        (request-postlude conn header app-status :fcgi-request-complete)
+        (= app-status 0)))))
 
 (defn route-result
   [conn msg]
@@ -209,92 +211,91 @@
   (var nthreads 0)
   (var quit false)
 
-  (prompt :quit
-     (forever
-      (when-let [msg (ev/take chan)]
-        (cond
-          (= (msg 0) :task)
-          (let [[type header content] msg]
-            (if (= nthreads max-threads)
-              (do
-                (put header :type :fcgi-end-request)
-                (request-postlude conn header 0 :fcgi-overloaded)
-                (log/write
-                 (string/format "Max threads exceeded; request rejected")))
-              (do
-                (set nthreads (inc nthreads))
-                (invoke-request-handler conn header content entry-points
-                                        route-param chan peg-grammar))))
-          (or (= (msg 0) :ok) (= (msg 0) :err))
-          (do
-            (set nthreads (dec nthreads))
-            (route-result conn msg)
-            (when (and quit (= nthreads 0))
-              (log/write "Connection closed at webserver request" 2)
-              (:close conn)
-              (return :quit)))
+  (forever
+   (when-let [msg (ev/take chan)]
+     (cond
+       (= (msg 0) :task)
+       (let [[type header content] msg]
+         (if (= nthreads max-threads)
+           (do
+             (put header :type :fcgi-end-request)
+             (request-postlude conn header 0 :fcgi-overloaded)
+             (log/write
+              (string/format "Max threads exceeded; request rejected")))
+           (do
+             (when (invoke-request-handler conn header content entry-points
+                                                route-param chan peg-grammar)
+               (set nthreads (inc nthreads))))))
 
-          (= (msg 0) :quit)
-          (do
-            (if (> nthreads 0)
-              (set quit true) # delay exit until threads complete
-              (return :quit)))))))
+       (or (= (msg 0) :ok) (= (msg 0) :err))
+       (do
+         (set nthreads (dec nthreads))
+         (route-result conn msg)
+         (when (and quit (= nthreads 0))
+           (log/write "Connection closed at webserver request" 2)
+           (:close conn)
+           (break)))
+
+       (= (msg 0) :quit)
+       (do
+         (if (> nthreads 0)
+           (set quit true) # delay exit until threads complete
+           (break))))))
   (log/write "Route-Mgr terminated" 10))
 
 (defn listener
   "Read messages from webserver and react as required."
   [conn chan max-threads]
-  (prompt :quit
-     (try
-       (forever
-        (let [[header content] (fcgi/read-msg conn)]
-          (cond
-            (or (= header :closed) (= header :reset))
-            (when conn
-              (log/write "Connection closed or reset" 2)
-              (:close conn)
-              (ev/give chan [:quit]))
-            :else
-             (do
-               (log/write (string/format "Received: %p" (header :type)) 5)
-               (cond
-                 (= (header :type) :fcgi-begin-request)
-                 (log/write (string/format "Begin request: %p\n%p"
-                                           header content) 3)
+  (try
+    (forever
+     (let [[header content] (fcgi/read-msg conn)]
+       (cond
+         (or (= header :closed) (= header :reset))
+         (when conn
+           (log/write "Connection closed or reset" 2)
+           (:close conn)
+           (ev/give chan [:quit]))
+         :else
+          (do
+            (log/write (string/format "Received: %p" (header :type)) 5)
+            (cond
+              (= (header :type) :fcgi-begin-request)
+              (log/write (string/format "Begin request: %p\n%p"
+                                        header content) 3)
 
-                 (= (header :type) :fcgi-get-values)
-                 (handle-values conn header content max-threads)
+              (= (header :type) :fcgi-get-values)
+              (handle-values conn header content max-threads)
 
-                 (or (= (header :type) :fcgi-params)
-                     (= (header :type) :fcgi-stdin))
-                 (when (and (content :params-complete)
-                            (content :stdin-complete))
-                   (ev/give chan [:task header content])
-                   (when (not (content :fcgi-keep-conn))
-                     (ev/give chan [:quit])
-                     (return :quit)))
+              (or (= (header :type) :fcgi-params)
+                  (= (header :type) :fcgi-stdin))
+              (when (and (content :params-complete)
+                         (content :stdin-complete))
+                (ev/give chan [:task header content])
+                (when (not (content :fcgi-keep-conn))
+                  (ev/give chan [:quit])
+                  (break)))
 
-                 (= (header :type) :fcgi-abort-request)
-                 (let [keep-conn
-                       ((fcgi/requests (header :request-id)) :fcgi-keep-conn)]
-                   (handle-abort-request conn header)
-                   (when (not keep-conn)
-                     (ev/give chan [:quit])
-                     (return :quit)))
+              (= (header :type) :fcgi-abort-request)
+              (let [keep-conn
+                    ((fcgi/requests (header :request-id)) :fcgi-keep-conn)]
+                (handle-abort-request conn header)
+                (when (not keep-conn)
+                  (ev/give chan [:quit])
+                  (break)))
 
-                 (= (header :type) :fcgi-null-request-id)
-                 (do
-                   (log/write "Terminated by client" 0)
-                   (ev/give chan [:quit])
-                   (ev/sleep 1)
-                   (os/exit 0)))))))
-     ([err f]
-      (when (not= err "stream is closed")
-        (log/write (string/format "Listener exit: %p" err))
-        (ev/give chan [:quit])
-        (when (or (= err "Broken pipe") (= err "stream hup"))
-          (when conn
-            (:close conn)))))))
+              (= (header :type) :fcgi-null-request-id)
+              (do
+                (log/write "Terminated by client" 0)
+                (ev/give chan [:quit])
+                (ev/sleep 1)
+                (os/exit 0)))))))
+    ([err f]
+     (when (not= err "stream is closed")
+       (log/write (string/format "Listener exit: %p" err))
+       (ev/give chan [:quit])
+       (when (or (= err "Broken pipe") (= err "stream hup"))
+         (when conn
+           (:close conn))))))
   (log/write "Listener terminated" 10))
 
 (defn handler
