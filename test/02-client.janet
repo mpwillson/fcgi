@@ -125,8 +125,10 @@
       (pp page)
       (assert (deep= page end-request)))
     (:close conn)
+    (set conn (net/connect :unix "/tmp/fcgi.sock"))
 
     # terminate server
     (printf ">> Terminating fcgi-server")
-    (os/shell "pkill -n janet")
+    (put fcgi-header :type :fcgi-null-request-id)
+    (fcgi/write-msg conn fcgi-header "")
     (os/sleep 1)))
