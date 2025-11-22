@@ -240,7 +240,10 @@
        (do
          (if (> nthreads 0)
            (set quit true) # delay exit until threads complete
-           (break))))))
+           (do
+             (:close chan)
+             (break)))))))
+
   (log/write "Route-Mgr terminated" 10))
 
 (defn listener
@@ -252,9 +255,10 @@
        (log/write (string/format "Received: %p" (header :type)) 5)
        (cond
          (or (= header :closed) (= header :reset))
-         (when conn
+         (do
            (log/write "Connection closed or reset" 2)
-           (:close conn)
+           (when conn
+             (:close conn))
            (ev/give chan [:quit]))
 
          (= (header :type) :fcgi-begin-request)
@@ -285,31 +289,31 @@
            (log/write "Terminated by client" 0)
            (ev/give chan [:quit])
            (ev/sleep 1)
-                (os/exit 0)))))
+           (os/exit 0)))))
     ([err f]
      (when (not= err "stream is closed")
        (log/write (string/format "Listener exit: %p" err))
        (ev/give chan [:quit])
-       (when (or (= err "Broken pipe") (= err "stream hup"))
-         (when conn
-           (:close conn))))))
+       (when (and (or (= err "Broken pipe") (= err "stream hup")) conn)
+         (:close conn)))))
   (log/write "Listener terminated" 10))
 
 (defn handler
   "Handle comms with the webserver. Runs route-mgr in a new fiber to
    initiate route scripts and return results. Calls listerner to receive
    webserver messages and action them."
-  [conn config entry-points peg-grammar]
+  [conn chan config entry-points peg-grammar]
   (log/write (string/format "Handler running with conn: %p" conn) 10)
-  (let [chan (ev/thread-chan 10)]
-    (ev/call route-mgr conn chan entry-points (config :route-param)
-                 (config :max-threads) peg-grammar)
-    (listener conn chan (config :max-threads)))
+  (ev/call route-mgr conn chan entry-points (config :route-param)
+           (config :max-threads) peg-grammar)
+  (listener conn chan (config :max-threads))
   (log/write "Handler exit" 10))
 
 (defn handle-term-signal
   [chan]
   (log/write "Terminated by TERM signal")
+  (ev/give chan [:quit])
+  (ev/sleep 1)
   (os/exit 0))
 
 (defn handle-hup-signal
@@ -337,14 +341,14 @@
       (os/rm (config :socket-file)))
 
     (let [fcgi-server (net/listen :unix (config :socket-file))
-          super-chan (ev/thread-chan (config :max-threads))]
+          rm-chan (ev/thread-chan (config :max-threads))]
       (when (config :user)
         (osx/chown (config :socket-file) (config :user))
         (osx/setuid (config :user))
         (log/write (string/format "Effective user: %s" (config :user))))
-      (os/sigaction :term |(handle-term-signal super-chan) true)
+      (os/sigaction :term |(handle-term-signal rm-chan) true)
       (os/sigaction :hup
-         |(handle-hup-signal super-chan (config :routes))
+         |(handle-hup-signal rm-chan (config :routes))
          true)
       (set *entry-points* (load-routes (config :routes)))
       (forever
@@ -353,4 +357,5 @@
          (log/write (string/format "Client connected on stream: %p" conn) 5)
          # dynamic vars such as *peg-grammar* are not passed to other fibers,
          # so pass explicitly
-         (ev/call handler conn config *entry-points* (dyn :peg-grammar)))))))
+         (ev/call handler conn rm-chan config *entry-points*
+                  (dyn :peg-grammar)))))))
