@@ -145,17 +145,17 @@
 (defn invoke-request-handler
   "Invoke route script in a new fiber. Returns true if route found,
    false otherwise."
-  [conn header request entry-points route-param chan peg-grammar]
+  [conn header request route-param chan peg-grammar]
   (var app-status 0)
   (let [header (fcgi/mk-header :type :fcgi-stdout
                   :request-id (header :request-id))
         target ((request :params) route-param)
         match (if target
-                (find-index |(= ($ :url) target) entry-points)
+                (find-index |(= ($ :url) target) *entry-points*)
                 (log/write (string/format "Error: no such route param: %s"
                                           route-param)))]
     (if match
-      (let [fun ((entry-points match) :function)]
+      (let [fun ((*entry-points* match) :function)]
         (log/write (string/format "Starting request for: %s [%d]" target
                                   (header :request-id)) 0)
         (ev/call run-thread fun header request target chan
@@ -207,7 +207,7 @@
 (defn route-mgr
   "Initiate route scripts at listener request via chan. Results are returned
    directly to the webserver via conn."
-  [conn chan entry-points route-param max-threads peg-grammar]
+  [conn chan routes route-param max-threads peg-grammar]
   (var nthreads 0)
   (var quit false)
 
@@ -223,8 +223,8 @@
              (log/write
               (string/format "Max threads exceeded; request rejected")))
            (do
-             (when (invoke-request-handler conn header content entry-points
-                                                route-param chan peg-grammar)
+             (when (invoke-request-handler conn header content route-param
+                                           chan peg-grammar)
                (set nthreads (inc nthreads))))))
 
        (or (= (msg 0) :ok) (= (msg 0) :err))
@@ -235,6 +235,9 @@
            (log/write "Connection closed at webserver request" 2)
            (:close conn)
            (break)))
+
+       (= (msg 0) :reload)
+       (set *entry-points* (load-routes routes))
 
        (= (msg 0) :quit)
        (do
@@ -302,9 +305,9 @@
   "Handle comms with the webserver. Runs route-mgr in a new fiber to
    initiate route scripts and return results. Calls listerner to receive
    webserver messages and action them."
-  [conn chan config entry-points peg-grammar]
+  [conn chan config peg-grammar]
   (log/write (string/format "Handler running with conn: %p" conn) 10)
-  (ev/call route-mgr conn chan entry-points (config :route-param)
+  (ev/call route-mgr conn chan (config :routes) (config :route-param)
            (config :max-threads) peg-grammar)
   (listener conn chan (config :max-threads))
   (log/write "Handler exit" 10))
@@ -317,9 +320,9 @@
   (os/exit 0))
 
 (defn handle-hup-signal
-  [chan routes]
-  (log/write "Reloading routes on HUP")
-  (set *entry-points* (load-routes routes)))
+  [chan]
+  (log/write "Requesting reload of routes on HUP signal")
+  (ev/give chan [:reload]))
 
 (defn main
   [name & args]
@@ -347,9 +350,7 @@
         (osx/setuid (config :user))
         (log/write (string/format "Effective user: %s" (config :user))))
       (os/sigaction :term |(handle-term-signal rm-chan) true)
-      (os/sigaction :hup
-         |(handle-hup-signal rm-chan (config :routes))
-         true)
+      (os/sigaction :hup |(handle-hup-signal rm-chan) true)
       (set *entry-points* (load-routes (config :routes)))
       (forever
        (log/write "Awaiting connection ..." 5)
@@ -357,5 +358,4 @@
          (log/write (string/format "Client connected on stream: %p" conn) 5)
          # dynamic vars such as *peg-grammar* are not passed to other fibers,
          # so pass explicitly
-         (ev/call handler conn rm-chan config *entry-points*
-                  (dyn :peg-grammar)))))))
+         (ev/call handler conn rm-chan config (dyn :peg-grammar)))))))
