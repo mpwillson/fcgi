@@ -210,6 +210,7 @@
   [conn chan routes route-param max-threads peg-grammar]
   (var nthreads 0)
   (var quit false)
+  (var reload false)
 
   (forever
    (when-let [msg (ev/take chan)]
@@ -234,18 +235,22 @@
          (when (and quit (= nthreads 0))
            (log/write "Connection closed at webserver request" 2)
            (:close conn)
-           (break)))
+           (break))
+         (when (and reload (= nthreads 0))
+           (set *entry-points* (load-routes routes))
+           (set reload false)))
 
        (= (msg 0) :reload)
-       (set *entry-points* (load-routes routes))
+       (if (= nthreads 0)
+         (set *entry-points* (load-routes routes))
+         (set reload true))
 
        (= (msg 0) :quit)
-       (do
-         (if (> nthreads 0)
-           (set quit true) # delay exit until threads complete
-           (do
-             (:close chan)
-             (break)))))))
+       (if (> nthreads 0)
+         (set quit true) # delay exit until threads complete
+         (do
+           (:close chan)
+           (break))))))
 
   (log/write "Route-Mgr terminated" 10))
 
